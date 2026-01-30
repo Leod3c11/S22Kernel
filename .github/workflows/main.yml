@@ -1,4 +1,4 @@
-name: Build S22 Kernel (kernel_platform) - UFDT AOSP Fix
+name: Build S22 Kernel (kernel_platform) - UFDT Prebuilt Fix
 
 on:
   workflow_dispatch:
@@ -44,38 +44,35 @@ jobs:
 
         mkdir -p $TOOLCHAIN_DIR
         cd $TOOLCHAIN_DIR
-
         wget $CLANG_URL -O clang.tar.gz
         mkdir clang-r416183b
         tar -C clang-r416183b -xzf clang.tar.gz
         rm clang.tar.gz
         cd -
 
-    # 🔥 FIX REAL: libufdt NÃO existe no repo → baixar do AOSP
-    - name: Download, Build and Install libufdt (AOSP)
+    # ✅ FIX REAL E DEFINITIVO
+    - name: Install ufdt_apply_overlay (AOSP PREBUILT)
       run: |
         set -e
 
-        echo "📥 Clonando libufdt do AOSP"
-        git clone https://android.googlesource.com/platform/system/libufdt
+        echo "📥 Baixando ufdt_apply_overlay pré-compilado do AOSP"
+        git clone https://android.googlesource.com/platform/prebuilts/misc
 
-        cd libufdt
+        UFDT_BIN=prebuilts/misc/linux-x86/ufdt/ufdt_apply_overlay
 
-        echo "🔨 Compilando libufdt"
-        make
+        if [ ! -f "$UFDT_BIN" ]; then
+          echo "❌ ufdt_apply_overlay não encontrado no prebuilt"
+          exit 1
+        fi
 
-        echo "📦 Instalando ufdt_apply_overlay globalmente"
-        sudo cp utils/src/ufdt_apply_overlay /usr/local/bin/
+        sudo cp "$UFDT_BIN" /usr/local/bin/
         sudo chmod +x /usr/local/bin/ufdt_apply_overlay
 
         which ufdt_apply_overlay
         ufdt_apply_overlay --help || true
 
-        cd ..
-
     - name: Prepare Build Environment
       run: |
-        # Remove toolchain hermético bugado
         rm -rf kernel_platform/build/build-tools/path/linux-x86
 
         cat <<'EOF' > my_build.sh
