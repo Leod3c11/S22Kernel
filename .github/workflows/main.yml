@@ -1,12 +1,9 @@
-name: Build vendor_boot.img
+name: Build vendor_boot.img (Fixed)
 
 on:
   workflow_dispatch:
   push:
     branches: [ main ]
-    paths:
-      - 'kernel_platform/**'
-      - 'build_kernel_GKI.sh'
 
 jobs:
   build:
@@ -24,25 +21,37 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison git-lfs libssl-dev libelf-dev \
             python3 python3-pip python-is-python3 repo \
-            cpio zip unzip tar gzip bzip2 lz4 liblz4-tool
+            cpio zip unzip tar gzip bzip2 lz4 liblz4-tool sed tr coreutils findutils
 
-      - name: Set Environment Variables
+      - name: Fix PATH and Run Build
         run: |
-          echo "ANDROID_BUILD_TOP=$(pwd)" >> $GITHUB_ENV
-          echo "OUT_DIR=$(pwd)/out" >> $GITHUB_ENV
-          # O script original usa caminhos relativos para toolchains que podem não existir no repo.
-          # Vamos garantir que o PATH inclua ferramentas necessárias se o repo as fornecer.
-          echo "$(pwd)/kernel_platform/gcc/linux-x86_64/x86_64-linux-gnu/bin" >> $GITHUB_PATH
-
-      - name: Run Build Script
-        run: |
+          # Criar um wrapper para o script de build que preserva o PATH do sistema
+          # O script original parece estar limpando o PATH ou definindo-o de forma restritiva.
+          
+          export ANDROID_BUILD_TOP=$(pwd)
+          export OUT_DIR=$(pwd)/out
+          
+          # Garantir permissões
           chmod +x build_kernel_GKI.sh
-          chmod +x kernel_platform/build/android/prepare_vendor.sh
-          chmod +x kernel_platform/build/build.sh
+          find kernel_platform/build/ -name "*.sh" -exec chmod +x {} +
           chmod +x kernel_platform/build/brunch
           
-          # O script build_kernel_GKI.sh executa o prepare_vendor.sh
-          # Vamos rodar o script principal do usuário
+          # Executar o build injetando o PATH do sistema no início da variável PATH
+          # para que comandos como 'nproc', 'sed', etc, sejam encontrados em /usr/bin ou /bin
+          
+          SYSTEM_PATH=$PATH
+          
+          # Algumas builds da Samsung/Qualcomm esperam que o PATH seja manipulado.
+          # Vamos tentar rodar o script garantindo que os binários essenciais existam.
+          # Se o script interno fizer "PATH=...", ele vai quebrar. 
+          # Uma solução comum é linkar ferramentas essenciais para dentro de uma das pastas que o script define.
+          
+          mkdir -p kernel_platform/prebuilts/gcc/linux-x86/host/bin
+          for cmd in nproc readlink sed tr grep awk find xargs; do
+            ln -sf $(which $cmd) kernel_platform/prebuilts/gcc/linux-x86/host/bin/$cmd
+          done
+          export PATH=$(pwd)/kernel_platform/prebuilts/gcc/linux-x86/host/bin:$PATH
+          
           ./build_kernel_GKI.sh
 
       - name: Verify and Upload Artifacts
@@ -51,7 +60,7 @@ jobs:
         with:
           name: kernel-build-output
           path: |
-            out/msm-waipio-waipio-gki/dist/vendor_boot.img
-            out/msm-waipio-waipio-gki/dist/Image
-            out/msm-waipio-waipio-gki/dist/*.ko
+            out/**/dist/vendor_boot.img
+            out/**/dist/Image
+            out/**/dist/*.ko
           if-no-files-found: warn
