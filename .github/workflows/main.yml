@@ -1,9 +1,8 @@
-name: Kernel Build (Waipio - Vendor Boot | Proton Clang)
+name: Kernel Build (Waipio GKI - Vendor Boot | Proton Clang)
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -14,10 +13,10 @@ jobs:
       ARCH: arm64
       SUBARCH: arm64
       CC: clang
-      CROSS_COMPILE: aarch64-linux-gnu-
-      CROSS_COMPILE_ARM32: arm-linux-gnueabi-
       LLVM: 1
       LLVM_IAS: 1
+      CROSS_COMPILE: aarch64-linux-gnu-
+      CROSS_COMPILE_ARM32: arm-linux-gnueabi-
 
     steps:
       # ------------------------------------------------------------
@@ -37,7 +36,7 @@ jobs:
           sudo apt-get install -y \
             git make gcc g++ python3 bc flex bison \
             libssl-dev libelf-dev cpio unzip wget xz-utils zip \
-            rsync file build-essential curl
+            rsync file build-essential curl coreutils
 
       # ------------------------------------------------------------
       # Toolchain – Proton Clang
@@ -50,27 +49,38 @@ jobs:
           mkdir -p "$TOOLCHAIN_DIR"
           cd "$TOOLCHAIN_DIR"
 
-          echo "Baixando Proton Clang..."
+          echo "Clonando Proton Clang..."
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git
 
           echo "${TOOLCHAIN_DIR}/proton-clang/bin" >> $GITHUB_PATH
 
-          echo "AR=llvm-ar" >> $GITHUB_ENV
-          echo "NM=llvm-nm" >> $GITHUB_ENV
-          echo "OBJCOPY=llvm-objcopy" >> $GITHUB_ENV
-          echo "OBJDUMP=llvm-objdump" >> $GITHUB_ENV
-          echo "STRIP=llvm-strip" >> $GITHUB_ENV
-          echo "LD=ld.lld" >> $GITHUB_ENV
-          echo "KBUILD_COMPILER_STRING=$(clang --version | head -n 1)" >> $GITHUB_ENV
+          {
+            echo "AR=llvm-ar"
+            echo "NM=llvm-nm"
+            echo "OBJCOPY=llvm-objcopy"
+            echo "OBJDUMP=llvm-objdump"
+            echo "STRIP=llvm-strip"
+            echo "LD=ld.lld"
+            echo "KBUILD_COMPILER_STRING=$(clang --version | head -n 1)"
+          } >> $GITHUB_ENV
 
           clang --version
 
       # ------------------------------------------------------------
       # Build Kernel + vendor_boot
       # ------------------------------------------------------------
-      - name: Build Kernel (Waipio GKI + vendor_boot)
+      - name: Build Kernel (Waipio GKI)
         run: |
           set -e
+
+          # PATH seguro (CRÍTICO)
+          export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH
+
+          echo "Verificando ferramentas essenciais:"
+          which nproc
+          which sed
+          which tr
+          which readlink
 
           chmod +x *.sh || true
           chmod +x kernel_platform/build/*.sh || true
@@ -78,12 +88,12 @@ jobs:
           echo ">>> Iniciando build do kernel"
           ./build_kernel_GKI.sh
 
-          echo ">>> Procurando diretório de saída"
-          BUILD_OUT_DIR=$(find . -type d -name "msm-waipio-gki" | head -n 1)
+          echo ">>> Localizando diretório de saída"
+          BUILD_OUT_DIR=$(find out -type d -name "*waipio*gki*" | head -n 1)
 
           if [ -z "$BUILD_OUT_DIR" ]; then
-            echo "ERRO: diretório msm-waipio-gki não encontrado"
-            find . -maxdepth 4 -type d
+            echo "ERRO: diretório de saída não encontrado"
+            find out -maxdepth 4 -type d
             exit 1
           fi
 
@@ -99,6 +109,7 @@ jobs:
 
           mkdir -p output/modules
 
+          echo "Procurando vendor_boot.img..."
           VENDOR_BOOT_IMG=$(find "$BUILD_OUT_DIR" -name "vendor_boot.img" | head -n 1)
 
           if [ -z "$VENDOR_BOOT_IMG" ]; then
