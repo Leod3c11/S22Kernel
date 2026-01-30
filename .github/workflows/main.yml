@@ -1,71 +1,99 @@
-name: Build S22 Kernel (kernel_platform) - UFDT Final Fix
+name: Build Samsung GKI Kernel
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ main ]
-    paths:
-      - 'kernel_platform/**'
-      - 'msm-kernel/**'
-      - 'build_kernel_GKI.sh'
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     steps:
-    - uses: actions/checkout@v4
+    - name: 📥 Checkout kernel source
+      uses: actions/checkout@v4
       with:
-        submodules: true
+        submodules: recursive
+        fetch-depth: 0
 
-    - name: Setup Swap (8GB)
-      run: |
-        sudo swapoff /swapfile 2>/dev/null || true
-        sudo dd if=/dev/zero of=/swapfile bs=1M count=8192
-        sudo chmod 600 /swapfile
-        sudo mkswap /swapfile
-        sudo swapon /swapfile
-        free -h
-
-    - name: Install deps
+    # ===============================
+    # DEPENDÊNCIAS DO SISTEMA
+    # ===============================
+    - name: 🧰 Install build dependencies (LLVM + tools)
       run: |
         sudo apt-get update
         sudo apt-get install -y \
           bc bison build-essential flex libssl-dev \
           libncurses5-dev libelf-dev binutils-dev \
-          qemu-user-static rsync wget tar git
+          rsync wget curl git unzip \
+          clang lld llvm device-tree-compiler
 
-    - name: Install ufdt_apply_overlay (AOSP prebuilts)
+        echo "✅ Toolchain check"
+        which clang
+        which ld.lld
+        clang --version
+        ld.lld --version
+
+    # ===============================
+    # UFDT (DTBO OVERLAY TOOL)
+    # ===============================
+    - name: 📥 Install ufdt_apply_overlay (AOSP prebuilt)
       run: |
         set -e
-        git clone https://android.googlesource.com/platform/prebuilts/misc
-        UFDT_BIN=$(find misc -type f -name ufdt_apply_overlay | head -n 1)
+
+        git clone https://android.googlesource.com/platform/prebuilts/misc prebuilts-misc
+
+        UFDT_BIN=$(find prebuilts-misc -type f -name ufdt_apply_overlay | head -n 1)
+
         if [ -z "$UFDT_BIN" ]; then
-          echo "ufdt_apply_overlay não encontrado"
+          echo "❌ ufdt_apply_overlay não encontrado nos prebuilts"
           exit 1
         fi
-        sudo cp "$UFDT_BIN" /usr/local/bin/
+
+        echo "✅ ufdt_apply_overlay encontrado em: $UFDT_BIN"
+        sudo cp "$UFDT_BIN" /usr/local/bin/ufdt_apply_overlay
         sudo chmod +x /usr/local/bin/ufdt_apply_overlay
+
         which ufdt_apply_overlay
+        ufdt_apply_overlay --help || true
 
-    - name: Prepare build
+    # ===============================
+    # VARIÁVEIS LLVM (OBRIGATÓRIO GKI)
+    # ===============================
+    - name: ⚙️ Export LLVM environment
       run: |
-        rm -rf kernel_platform/build/build-tools/path/linux-x86
-        cat <<'EOF' > my_build.sh
-        #!/bin/bash
+        echo "LLVM=1" >> $GITHUB_ENV
+        echo "LLVM_IAS=1" >> $GITHUB_ENV
+        echo "LD=ld.lld" >> $GITHUB_ENV
+
+    # ===============================
+    # BUILD DO GKI
+    # ===============================
+    - name: 🔨 Build GKI Kernel
+      run: |
         set -e
-        export MAKEFLAGS="-j4"
-        export HERMETIC_TOOLCHAIN=0
-        export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH
-        bash build_kernel_GKI.sh
-        EOF
-        chmod +x my_build.sh
 
-    - name: Build kernel
-      run: ./my_build.sh
+        export ARCH=arm64
+        export SUBARCH=arm64
+        export LLVM=1
+        export LLVM_IAS=1
+        export LD=ld.lld
 
-    - name: Upload artifacts
+        # Ajuste se necessário
+        export BUILD_CONFIG=kernel_platform/common/build.config.gki
+
+        cd kernel_platform
+
+        bash build/build.sh
+
+    # ===============================
+    # ARTEFATOS
+    # ===============================
+    - name: 📦 Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: s22-kernel
-        path: out/**/dist/*
+        name: kernel-output
+        path: |
+          out/**/Image
+          out/**/Image.gz
+          out/**/Image.lz4
+          out/**/dtbo.img
+          out/**/vendor_boot.img
