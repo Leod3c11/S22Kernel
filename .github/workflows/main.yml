@@ -1,4 +1,4 @@
-name: Build S22 Kernel (kernel_platform)
+name: Build S22 Kernel (kernel_platform) - Optimized
 
 on:
   workflow_dispatch:
@@ -12,15 +12,24 @@ on:
 
 jobs:
   build:
+    # Usar um runner maior (se disponível) ou manter o padrão e otimizar
     runs-on: ubuntu-latest
     
     steps:
     - name: Checkout Repository
       uses: actions/checkout@v4
       with:
-        # O repositório é grande, mas o --depth 1 já foi usado no git clone do script.
-        # Para o checkout inicial, vamos manter o padrão.
         submodules: true
+
+    - name: Setup Swap Space (Memory Mitigation)
+      run: |
+        # Aumentar o espaço de swap para mitigar o erro OOM (Out of Memory) durante a linkagem
+        sudo fallocate -l 8G /swapfile
+        sudo chmod 600 /swapfile
+        sudo mkswap /swapfile
+        sudo swapon /swapfile
+        echo "Swap space created and activated."
+        free -h
 
     - name: Install Build Dependencies
       run: |
@@ -50,12 +59,15 @@ jobs:
     - name: Prepare Environment and Fix Build Paths
       run: |
         # 1. Remover o diretório problemático que causa conflito com as ferramentas do sistema
-        # Isso força o script a usar as ferramentas instaladas via apt (bison, flex, etc.)
         rm -rf kernel_platform/build/build-tools/path/linux-x86
         
         # 2. Criar e configurar o script de compilação
         cat <<EOF > my_build.sh
         #!/bin/bash
+        # Definir o número máximo de threads para compilação (para economizar memória)
+        # O runner padrão tem 2 cores, mas 4 threads é um bom equilíbrio para a fase de linkagem
+        export MAKEFLAGS="-j4"
+        
         # Desativar o modo hermético para usar o toolchain baixado
         export HERMETIC_TOOLCHAIN=0
         # Definir o caminho para o binário do Clang
