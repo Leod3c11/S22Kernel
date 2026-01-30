@@ -1,4 +1,4 @@
-name: Build S22 Kernel (kernel_platform) - Optimized
+name: Build S22 Kernel (kernel_platform) - Final Optimized
 
 on:
   workflow_dispatch:
@@ -12,7 +12,6 @@ on:
 
 jobs:
   build:
-    # Usar um runner maior (se disponível) ou manter o padrão e otimizar
     runs-on: ubuntu-latest
     
     steps:
@@ -21,10 +20,13 @@ jobs:
       with:
         submodules: true
 
-    - name: Setup Swap Space (Memory Mitigation)
+    - name: Setup Swap Space (Robust Memory Mitigation)
       run: |
-        # Aumentar o espaço de swap para mitigar o erro OOM (Out of Memory) durante a linkagem
-        sudo fallocate -l 8G /swapfile
+        # Desativa qualquer swap existente no arquivo /swapfile
+        sudo swapoff /swapfile 2>/dev/null || true
+        
+        # Cria um novo arquivo de swap de 8GB usando dd (mais robusto que fallocate em alguns ambientes)
+        sudo dd if=/dev/zero of=/swapfile bs=1M count=8192
         sudo chmod 600 /swapfile
         sudo mkswap /swapfile
         sudo swapon /swapfile
