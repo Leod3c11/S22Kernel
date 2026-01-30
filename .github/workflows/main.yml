@@ -1,4 +1,4 @@
-name: Build S22 Kernel (kernel_platform) - UFDT Fix
+name: Build S22 Kernel (kernel_platform) - UFDT Robust Fix
 
 on:
   workflow_dispatch:
@@ -20,7 +20,7 @@ jobs:
       with:
         submodules: true
 
-    - name: Setup Swap Space (Robust Memory Mitigation)
+    - name: Setup Swap Space (8GB)
       run: |
         sudo swapoff /swapfile 2>/dev/null || true
         sudo dd if=/dev/zero of=/swapfile bs=1M count=8192
@@ -37,61 +37,64 @@ jobs:
           libncurses5-dev libelf-dev binutils-dev \
           qemu-user-static rsync wget tar
 
-    - name: Download and Configure Clang Toolchain (r416183b)
+    - name: Download Clang r416183b (Android 12L)
       run: |
         TOOLCHAIN_DIR="kernel_platform/prebuilts-master/clang/host/linux-x86"
-        CLANG_TAR="clang-r416183b.tar.gz"
         CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12L-gsi/clang-r416183b.tar.gz"
 
         mkdir -p $TOOLCHAIN_DIR
         cd $TOOLCHAIN_DIR
 
-        wget $CLANG_URL -O $CLANG_TAR
+        wget $CLANG_URL -O clang.tar.gz
         mkdir clang-r416183b
-        tar -C clang-r416183b -xzf $CLANG_TAR
-        rm $CLANG_TAR
+        tar -C clang-r416183b -xzf clang.tar.gz
+        rm clang.tar.gz
         cd -
 
-    - name: Build libufdt (ufdt_apply_overlay)
+    - name: Locate, Build and Install libufdt (AUTO-DETECT)
       run: |
-        cd kernel_platform/tools/libufdt
+        set -e
+
+        echo "🔍 Procurando libufdt..."
+        UFDT_DIR=$(find kernel_platform -type d -name libufdt | head -n 1)
+
+        if [ -z "$UFDT_DIR" ]; then
+          echo "❌ ERRO: libufdt não encontrado em kernel_platform"
+          exit 1
+        fi
+
+        echo "✅ libufdt encontrado em: $UFDT_DIR"
+        cd "$UFDT_DIR"
         make
         cd -
 
-    - name: Install ufdt_apply_overlay globally (FIX DEFINITIVO)
-      run: |
-        sudo cp kernel_platform/tools/libufdt/utils/src/ufdt_apply_overlay /usr/local/bin/
+        echo "📦 Instalando ufdt_apply_overlay globalmente"
+        sudo cp "$UFDT_DIR/utils/src/ufdt_apply_overlay" /usr/local/bin/
         sudo chmod +x /usr/local/bin/ufdt_apply_overlay
+
         which ufdt_apply_overlay
         ufdt_apply_overlay --help || true
 
-    - name: Prepare Environment
+    - name: Prepare Build Environment
       run: |
-        # Remove path hermético bugado
+        # Remove toolchain hermético quebrado
         rm -rf kernel_platform/build/build-tools/path/linux-x86
 
         cat <<'EOF' > my_build.sh
         #!/bin/bash
         set -e
 
-        # Limitar paralelismo (memória)
         export MAKEFLAGS="-j4"
-
-        # Desativar toolchain hermético
         export HERMETIC_TOOLCHAIN=0
 
-        # Clang correto
         export CLANG_PREBUILT_BIN=$(pwd)/kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin
 
-        # PATH limpo e previsível
         export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$CLANG_PREBUILT_BIN
 
-        # Ferramentas explícitas
         export BISON=/usr/bin/bison
         export FLEX=/usr/bin/flex
         export M4=/usr/bin/m4
 
-        # Build principal
         bash build_kernel_GKI.sh
         EOF
 
@@ -101,15 +104,15 @@ jobs:
       run: |
         ./my_build.sh
 
-    - name: Find and Upload Artifacts
+    - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
         name: s22-kernel-artifacts
         path: |
-          out/msm-waipio-waipio-gki/dist/Image
-          out/msm-waipio-waipio-gki/dist/Image.lz4
-          out/msm-waipio-waipio-gki/dist/vmlinux
-          out/msm-waipio-waipio-gki/dist/modules.zip
-          out/msm-waipio-waipio-gki/dist/*.dtbo
+          out/**/dist/Image
+          out/**/dist/Image.lz4
+          out/**/dist/vmlinux
+          out/**/dist/modules.zip
+          out/**/dist/*.dtbo
         if-no-files-found: error
         retention-days: 7
