@@ -1,0 +1,64 @@
+name: Build Only Kernel Modules
+
+on:
+  workflow_dispatch:
+    inputs:
+      module_path:
+        description: 'Caminho do módulo (ex: drivers/staging/qcacld-3.0)'
+        required: true
+        default: 'drivers/staging/qcacld-3.0'
+
+jobs:
+  build-modules:
+    runs-on: ubuntu-22.04
+    
+    env:
+      ARCH: arm64
+      SUBARCH: arm64
+      LLVM: 1
+      LLVM_IAS: 1
+      CC: clang
+      LD: ld.lld
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Baixar build pré-existente
+        uses: dawidd6/action-download-artifact@v2
+        with:
+          workflow: kernel-build.yml  # Seu workflow principal
+          name: kernel-build-artifacts
+          path: prebuilt/
+      
+      - name: Setup Environment
+        run: |
+          # Configurar toolchain
+          export PATH="${{ github.workspace }}/toolchain/proton-clang/bin:$PATH"
+          
+          # Extrair config do build anterior
+          if [ -f "prebuilt/.config" ]; then
+            cp prebuilt/.config kernel_platform/common/
+          fi
+      
+      - name: Build Specific Module
+        run: |
+          cd kernel_platform
+          
+          MODULE_PATH="${{ github.event.inputs.module_path }}"
+          
+          echo "Building module: $MODULE_PATH"
+          
+          # Build apenas o módulo
+          make -C common O=../out/module_build \
+            LLVM=1 LLVM_IAS=1 LD=ld.lld \
+            M="$MODULE_PATH" -j$(nproc)
+          
+          # Coletar o módulo compilado
+          find ../out/module_build -name "*.ko" -exec cp {} ../ \;
+      
+      - name: Upload Module
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-module
+          path: "*.ko"
