@@ -1,32 +1,38 @@
-name: Build Samsung GKI Kernel
+name: Build S22 Kernel (kernel_platform)
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'kernel_platform/**'
+      - 'msm-kernel/**'
+      - 'build_kernel_GKI.sh'
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
-
+    runs-on: ubuntu-latest
+    
     steps:
-    - name: 📥 Checkout kernel source
+    - name: Checkout Repository
       uses: actions/checkout@v4
       with:
-        submodules: recursive
-        fetch-depth: 0
+        submodules: true
 
     # ===============================
     # DEPENDÊNCIAS DO SISTEMA
     # ===============================
-    - name: 🧰 Install build dependencies (LLVM + tools)
+    - name: Install Build Dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y \
           bc bison build-essential flex libssl-dev \
           libncurses5-dev libelf-dev binutils-dev \
-          rsync wget curl git unzip \
+          qemu-user-static rsync wget tar \
           clang lld llvm device-tree-compiler
 
-        echo "✅ Toolchain check"
+        echo "🔎 Verificando LLVM"
         which clang
         which ld.lld
         clang --version
@@ -35,10 +41,11 @@ jobs:
     # ===============================
     # UFDT (DTBO OVERLAY TOOL)
     # ===============================
-    - name: 📥 Install ufdt_apply_overlay (AOSP prebuilt)
+    - name: Install ufdt_apply_overlay (AOSP prebuilt)
       run: |
         set -e
 
+        echo "📥 Clonando prebuilts do AOSP"
         git clone https://android.googlesource.com/platform/prebuilts/misc prebuilts-misc
 
         UFDT_BIN=$(find prebuilts-misc -type f -name ufdt_apply_overlay | head -n 1)
@@ -56,44 +63,80 @@ jobs:
         ufdt_apply_overlay --help || true
 
     # ===============================
-    # VARIÁVEIS LLVM (OBRIGATÓRIO GKI)
+    # CLANG AOSP (r416183b)
     # ===============================
-    - name: ⚙️ Export LLVM environment
+    - name: Download and Configure Clang Toolchain (r416183b)
       run: |
-        echo "LLVM=1" >> $GITHUB_ENV
-        echo "LLVM_IAS=1" >> $GITHUB_ENV
-        echo "LD=ld.lld" >> $GITHUB_ENV
+        TOOLCHAIN_DIR="kernel_platform/prebuilts-master/clang/host/linux-x86"
+        CLANG_TAR="clang-r416183b.tar.gz"
+        CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12L-gsi/clang-r416183b.tar.gz"
+        
+        echo "📥 Downloading Clang from: $CLANG_URL"
+        mkdir -p $TOOLCHAIN_DIR
+        cd $TOOLCHAIN_DIR
+        
+        wget $CLANG_URL -O $CLANG_TAR
+        mkdir clang-r416183b
+        tar -C clang-r416183b -xzf $CLANG_TAR
+        rm $CLANG_TAR
+        
+        cd -
 
     # ===============================
-    # BUILD DO GKI
+    # PREPARAÇÃO DO AMBIENTE
     # ===============================
-    - name: 🔨 Build GKI Kernel
+    - name: Prepare Environment and Fix Build Paths
       run: |
+        # Remover toolchain hermético quebrado
+        rm -rf kernel_platform/build/build-tools/path/linux-x86
+        
+        cat <<EOF > my_build.sh
+        #!/bin/bash
         set -e
 
-        export ARCH=arm64
-        export SUBARCH=arm64
+        # Desativar modo hermético
+        export HERMETIC_TOOLCHAIN=0
+
+        # Clang AOSP
+        export CLANG_PREBUILT_BIN=kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin
+
+        # LLVM obrigatório para GKI
         export LLVM=1
         export LLVM_IAS=1
         export LD=ld.lld
 
-        # Ajuste se necessário
-        export BUILD_CONFIG=kernel_platform/common/build.config.gki
+        # PATH seguro
+        export PATH=\$CLANG_PREBUILT_BIN:/usr/bin:/bin:/usr/sbin:/sbin:\$PATH
 
-        cd kernel_platform
+        # Ferramentas explícitas
+        export BISON=/usr/bin/bison
+        export FLEX=/usr/bin/flex
+        export M4=/usr/bin/m4
 
-        bash build/build.sh
+        # Build
+        bash build_kernel_GKI.sh
+        EOF
+        
+        chmod +x my_build.sh
+
+    # ===============================
+    # BUILD
+    # ===============================
+    - name: Build Kernel
+      run: |
+        ./my_build.sh
 
     # ===============================
     # ARTEFATOS
     # ===============================
-    - name: 📦 Upload artifacts
+    - name: Find and Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: kernel-output
+        name: s22-kernel-artifacts
         path: |
-          out/**/Image
-          out/**/Image.gz
-          out/**/Image.lz4
-          out/**/dtbo.img
-          out/**/vendor_boot.img
+          out/msm-waipio-waipio-gki/dist/Image.lz4
+          out/msm-waipio-waipio-gki/dist/Image
+          out/msm-waipio-waipio-gki/dist/modules.zip
+          out/msm-waipio-waipio-gki/dist/vmlinux
+        if-no-files-found: error
+        retention-days: 7
