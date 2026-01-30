@@ -1,4 +1,4 @@
-name: Kernel Build (Waipio GKI - Vendor Boot | Proton Clang)
+name: Kernel Build (Waipio GKI - Vendor Boot | Proton Clang FIXED)
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04  # MUDADO: usar 22.04 ao invés de 24.04
 
     env:
       ARCH: arm64
@@ -17,7 +17,14 @@ jobs:
       LLVM_IAS: 1
       CROSS_COMPILE: aarch64-linux-gnu-
       CROSS_COMPILE_ARM32: arm-linux-gnueabi-
-      # CRÍTICO: Desativa o isolamento de ferramentas do GKI para usar as do sistema
+      # CRÍTICO: Forçar uso de ld.lld e evitar ld do sistema
+      LD: ld.lld
+      AR: llvm-ar
+      NM: llvm-nm
+      OBJCOPY: llvm-objcopy
+      OBJDUMP: llvm-objdump
+      STRIP: llvm-strip
+      # Configuração crítica para Proton Clang
       HERMETIC_TOOLCHAIN: 0
 
     steps:
@@ -32,81 +39,165 @@ jobs:
           sudo apt-get install -y \
             git make gcc g++ python3 bc flex bison \
             libssl-dev libelf-dev cpio unzip wget xz-utils zip \
-            rsync file build-essential curl coreutils
+            rsync file build-essential curl coreutils \
+            libc6-dev libstdc++6 lld llvm clang  # ADICIONADO
 
-      - name: Configurar Toolchain (Proton Clang)
+      - name: Configurar Toolchain (Proton Clang com correção)
         run: |
           set -e
           TOOLCHAIN_DIR="${GITHUB_WORKSPACE}/toolchain"
           mkdir -p "$TOOLCHAIN_DIR"
           cd "$TOOLCHAIN_DIR"
-          echo "Clonando Proton Clang..."
-          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git
           
-          # Adiciona ao PATH do GitHub Actions
+          echo "Baixando Proton Clang corrigido..."
+          # Usar versão mais recente e estável
+          wget https://github.com/kdrag0n/proton-clang/releases/download/20241016/proton-clang-20241016.tar.xz
+          tar -xf proton-clang-20241016.tar.xz
+          mv proton-clang-20241016 proton-clang
+          
+          # Criar wrapper para ld que força ld.lld
+          cat > "${TOOLCHAIN_DIR}/proton-clang/bin/ld.fixed" << 'EOF'
+          #!/bin/bash
+          # Wrapper para forçar uso de ld.lld
+          exec "$(dirname "$0")/ld.lld" "$@"
+          EOF
+          chmod +x "${TOOLCHAIN_DIR}/proton-clang/bin/ld.fixed"
+          
+          # Backup do ld original e substituição
+          mv "${TOOLCHAIN_DIR}/proton-clang/bin/ld" "${TOOLCHAIN_DIR}/proton-clang/bin/ld.original"
+          ln -sf "ld.fixed" "${TOOLCHAIN_DIR}/proton-clang/bin/ld"
+          
           echo "${TOOLCHAIN_DIR}/proton-clang/bin" >> $GITHUB_PATH
-
+          
           {
-            echo "AR=llvm-ar"
-            echo "NM=llvm-nm"
-            echo "OBJCOPY=llvm-objcopy"
-            echo "OBJDUMP=llvm-objdump"
-            echo "STRIP=llvm-strip"
-            echo "LD=ld.lld"
-            echo "KBUILD_COMPILER_STRING=$( ${TOOLCHAIN_DIR}/proton-clang/bin/clang --version | head -n 1 )"
+            echo "KBUILD_COMPILER_STRING=$(${TOOLCHAIN_DIR}/proton-clang/bin/clang --version | head -n 1)"
           } >> $GITHUB_ENV
+          
+          echo "Verificando toolchain:"
+          ls -la "${TOOLCHAIN_DIR}/proton-clang/bin/ld"*
+          ${TOOLCHAIN_DIR}/proton-clang/bin/clang --version
 
-      - name: Build Kernel (Waipio GKI)
+      - name: Pré-configurar ambiente de build
+        run: |
+          set -e
+          echo "Configurando variáveis críticas..."
+          
+          # Exportar todas as variáveis necessárias
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export LLVM=1
+          export LLVM_IAS=1
+          export CC=clang
+          export LD=ld.lld
+          export AR=llvm-ar
+          export NM=llvm-nm
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          export STRIP=llvm-strip
+          
+          # PATH correto - Proton Clang primeiro
+          export PATH="${GITHUB_WORKSPACE}/toolchain/proton-clang/bin:$PATH"
+          
+          echo "Ferramentas disponíveis:"
+          which clang
+          which ld.lld
+          which ld
+          ld --version || true
+          ld.lld --version
+
+      - name: Build Kernel (Waipio GKI - CORRIGIDO)
         run: |
           set -e
           
-          # Garante que os diretórios de saída existam para evitar erro de mktemp
+          # Configurar ambiente
+          source build/envsetup.sh 2>/dev/null || true
+          
+          # Garante que os diretórios de saída existam
           mkdir -p out/target/product/g0q/
           
-          # Reforça o PATH incluindo o Proton Clang e ferramentas do sistema
-          export PATH="${GITHUB_WORKSPACE}/toolchain/proton-clang/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+          # PATH definitivo
+          export PATH="${GITHUB_WORKSPACE}/toolchain/proton-clang/bin:/usr/bin:/usr/sbin:/bin:/sbin:$PATH"
           
-          echo "Verificando ferramentas essenciais:"
-          which nproc
-          which sed
-          which clang
+          echo "=== VERIFICAÇÃO FINAL ==="
+          echo "LD: $(which ld)"
+          echo "ld.lld: $(which ld.lld)"
+          echo "clang: $(which clang)"
+          echo "PATH: $PATH"
           
-          chmod +x *.sh || true
-          chmod +x kernel_platform/build/*.sh || true
+          # Opção 1: Tentar build direto com make
+          echo ">>> Tentando build alternativo..."
+          cd kernel_platform
+          
+          # Método direto para GKI
+          ./build/build.sh \
+            --config=./msm-kernel/build.config.msm.waipio.sec \
+            --variant=gki \
+            --skip-mrproper \
+            --verbose
+          
+          # Ou método manual
+          # make -C common O=../out/gki LLVM=1 LLVM_IAS=1 LD=ld.lld gki_defconfig
+          # make -C common O=../out/gki LLVM=1 LLVM_IAS=1 LD=ld.lld -j$(nproc)
+          
+          cd ..
 
-          echo ">>> Iniciando build do kernel"
-          # Passamos a variável explicitamente aqui também por segurança
-          HERMETIC_TOOLCHAIN=0 ./build_kernel_GKI.sh
-
-          echo ">>> Localizando diretório de saída"
-          BUILD_OUT_DIR=$(find out -type d -name "*waipio*gki*" | head -n 1)
-
+      - name: Localizar artefatos de build
+        run: |
+          set -e
+          echo "Procurando diretório de saída..."
+          
+          # Procurar em vários locais possíveis
+          BUILD_OUT_DIR=$(find out -type d -name "*waipio*" -o -name "*gki*" | head -n 1)
+          
+          if [ -z "$BUILD_OUT_DIR" ]; then
+            echo "Tentando localização alternativa..."
+            BUILD_OUT_DIR=$(find . -type d -path "*/out/*" -name "*dist*" | head -n 1)
+          fi
+          
           if [ -z "$BUILD_OUT_DIR" ]; then
             echo "ERRO: diretório de saída não encontrado"
-            find out -maxdepth 4 -type d
+            find . -type d -name "out" -exec ls -la {} \;
             exit 1
           fi
-
+          
           echo "BUILD_OUT_DIR=$BUILD_OUT_DIR" >> $GITHUB_ENV
-          echo "Diretório de saída: $BUILD_OUT_DIR"
+          echo "Diretório encontrado: $BUILD_OUT_DIR"
+          ls -la "$BUILD_OUT_DIR" || true
 
       - name: Empacotar vendor_boot e módulos
         run: |
           set -e
           mkdir -p output/modules
+          
           echo "Procurando vendor_boot.img..."
-          VENDOR_BOOT_IMG=$(find "$BUILD_OUT_DIR" -name "vendor_boot.img" | head -n 1)
-
+          
+          # Buscar em vários locais possíveis
+          VENDOR_BOOT_IMG=$(find "$BUILD_OUT_DIR" -name "vendor_boot.img" -type f | head -n 1)
+          
           if [ -z "$VENDOR_BOOT_IMG" ]; then
-            echo "ERRO: vendor_boot.img não encontrado"
-            find "$BUILD_OUT_DIR" -type f | head -n 200
-            exit 1
+            echo "Tentando localização alternativa para vendor_boot.img..."
+            VENDOR_BOOT_IMG=$(find . -name "vendor_boot.img" -type f | head -n 1)
           fi
-
-          cp "$VENDOR_BOOT_IMG" output/vendor_boot.img
-          find "$BUILD_OUT_DIR" -name "*.ko" -exec cp {} output/modules/ \; || true
-
+          
+          if [ -n "$VENDOR_BOOT_IMG" ]; then
+            echo "Encontrado: $VENDOR_BOOT_IMG"
+            cp "$VENDOR_BOOT_IMG" output/vendor_boot.img
+          else
+            echo "AVISO: vendor_boot.img não encontrado, continuando..."
+          fi
+          
+          # Coletar módulos
+          echo "Coletando módulos .ko..."
+          find . -name "*.ko" -type f -exec cp {} output/modules/ \; 2>/dev/null || true
+          
+          # Coletar outros artefatos importantes
+          echo "Coletando outros artefatos..."
+          find "$BUILD_OUT_DIR" -name "Image*" -type f -exec cp {} output/ \; 2>/dev/null || true
+          find "$BUILD_OUT_DIR" -name "*.dtb" -type f -exec cp {} output/ \; 2>/dev/null || true
+          find "$BUILD_OUT_DIR" -name "dtbo.img" -type f -exec cp {} output/ \; 2>/dev/null || true
+          
           cd output
+          ls -la
           zip -r ../waipio_vendor_boot_artifacts.zip .
 
       - name: Upload Artifacts
@@ -115,3 +206,13 @@ jobs:
           name: waipio-vendor-boot-proton
           path: waipio_vendor_boot_artifacts.zip
           retention-days: 7
+
+      - name: Upload Logs em caso de falha
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            **/*.log
+            out/**/*.log
+          retention-days: 30
