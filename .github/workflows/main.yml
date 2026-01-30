@@ -1,4 +1,4 @@
-name: Kernel Build (Waipio GKI - Vendor Boot | AOSP Clang)
+name: Kernel Build (Waipio GKI - AOSP Clang r450784d)
 
 on:
   push:
@@ -21,57 +21,234 @@ jobs:
           sudo apt-get install -y \
             git build-essential python3 bc flex bison \
             libssl-dev libelf-dev cpio unzip wget xz-utils \
-            file rsync curl lld llvm clang \
-            libncurses-dev libc6-dev
+            file rsync curl lld llvm \
+            libncurses-dev libc6-dev gcc-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi kmod libxml2-utils
 
-      - name: Baixar Toolchain AOSP Clang
+      - name: Baixar AOSP Clang r450784d
         run: |
           set -e
-          TOOLCHAIN_DIR="${GITHUB_WORKSPACE}/prebuilts/clang/host/linux-x86"
-          mkdir -p "$TOOLCHAIN_DIR"
-          cd "$TOOLCHAIN_DIR"
           
-          # Clang r416183b (recomendado para GKI)
-          wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r416183b.tar.gz
-          mkdir -p clang-r416183b
-          tar -xzf clang-r416183b.tar.gz -C clang-r416183b
+          echo "=== BAIXANDO AOSP CLANG r450784d ==="
+          
+          CLANG_DIR="${GITHUB_WORKSPACE}/toolchain/clang"
+          
+          # Check if toolchain exists
+          if [ ! -f "$CLANG_DIR/bin/clang" ]; then
+              echo "-----------------------------------------------"
+              echo "Toolchain not found! Downloading..."
+              echo "-----------------------------------------------"
+              rm -rf $CLANG_DIR
+              mkdir -p $CLANG_DIR
+              pushd $CLANG_DIR > /dev/null
+              
+              # URL CORRIGIDA - usando mirrors conhecidos
+              echo "Tentando download do AOSP Clang..."
+              
+              # Método 1: Tentar URL direta
+              wget --tries=3 --timeout=30 -O clang.tar.gz \
+                "https://storage.googleapis.com/android-build-llvm/linux-x86/clang-r450784d.tar.gz" || \
+              
+              # Método 2: Alternativa
+              wget --tries=3 --timeout=30 -O clang.tar.gz \
+                "https://mirrors.tuna.tsinghua.edu.cn/git-repo/aosp-prebuilts/clang/host/linux-x86/clang-r450784d.tar.gz" || \
+              
+              # Método 3: Outro mirror
+              wget --tries=3 --timeout=30 -O clang.tar.gz \
+                "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r450784d.tar.gz"
+              
+              if [ -f "clang.tar.gz" ]; then
+                  echo "Extraindo toolchain..."
+                  tar xzf clang.tar.gz
+                  rm clang.tar.gz
+                  echo "Download concluído!"
+              else
+                  echo "Falha no download, usando fallback..."
+                  # Fallback: Clang do sistema
+                  mkdir -p bin
+                  ln -sf /usr/bin/clang-14 bin/clang
+                  ln -sf /usr/bin/clang++-14 bin/clang++
+                  ln -sf /usr/bin/ld.lld bin/ld.lld
+                  ln -sf /usr/bin/ld.lld bin/ld
+                  ln -sf /usr/bin/llvm-ar bin/llvm-ar
+                  ln -sf /usr/bin/llvm-nm bin/llvm-nm
+                  ln -sf /usr/bin/llvm-objcopy bin/llvm-objcopy
+                  ln -sf /usr/bin/llvm-strip bin/llvm-strip
+              fi
+              
+              echo "Cleaning up..."
+              popd > /dev/null
+          else
+              echo "Toolchain já existe!"
+          fi
           
           # Adicionar ao PATH
-          echo "${TOOLCHAIN_DIR}/clang-r416183b/bin" >> $GITHUB_PATH
+          echo "$CLANG_DIR/bin" >> $GITHUB_PATH
           
-          echo "CLANG_PATH=${TOOLCHAIN_DIR}/clang-r416183b/bin" >> $GITHUB_ENV
+          echo "=== VERIFICAÇÃO TOOLCHAIN ==="
+          ls -la $CLANG_DIR/bin/clang* || true
 
-      - name: Build com AOSP Clang
-        env:
-          ARCH: arm64
-          SUBARCH: arm64
-          LLVM: 1
-          LLVM_IAS: 1
-          CC: clang
-          LD: ld.lld
-          CLANG_TRIPLE: aarch64-linux-gnu-
-          CROSS_COMPILE: aarch64-linux-gnu-
-          CROSS_COMPILE_ARM32: arm-linux-gnueabi-
+      - name: Configurar Variáveis de Ambiente
         run: |
           set -e
           
-          cd kernel_platform
+          echo "=== CONFIGURANDO VARIÁVEIS ==="
           
-          # Método simplificado
-          ./build/build.sh \
-            --config=./msm-kernel/build.config.msm.waipio.sec \
-            --variant=gki \
-            --skip-mrproper
+          # Exportar variáveis críticas
+          {
+            echo "ARCH=arm64"
+            echo "SUBARCH=arm64"
+            echo "LLVM=1"
+            echo "LLVM_IAS=1"
+            echo "CC=clang"
+            echo "CXX=clang++"
+            echo "LD=ld.lld"
+            echo "AR=llvm-ar"
+            echo "NM=llvm-nm"
+            echo "OBJCOPY=llvm-objcopy"
+            echo "OBJDUMP=llvm-objdump"
+            echo "STRIP=llvm-strip"
+            echo "CLANG_TRIPLE=aarch64-linux-gnu-"
+            echo "CROSS_COMPILE=aarch64-linux-gnu-"
+            echo "CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
+            echo "HERMETIC_TOOLCHAIN=0"
+          } >> $GITHUB_ENV
           
-          # Coletar artefatos
-          find ../out -name "vendor_boot.img" -exec cp {} ../ \;
-          find ../out -name "*.ko" -exec cp {} ../ \;
+          # Testar toolchain
+          export PATH="${GITHUB_WORKSPACE}/toolchain/clang/bin:$PATH"
+          
+          echo "Clang versão:"
+          clang --version | head -5 || echo "Clang não encontrado"
+          
+          echo "ld.lld versão:"
+          ld.lld --version || echo "ld.lld não encontrado"
+
+      - name: Build Kernel
+        run: |
+          set -e
+          
+          echo "=== INICIANDO BUILD DO KERNEL ==="
+          
+          # Garantir que estamos no diretório correto
+          cd "${GITHUB_WORKSPACE}"
+          
+          # Verificar estrutura
+          echo "Estrutura do diretório:"
+          ls -la
+          
+          # Procurar scripts de build
+          if [ -f "build_kernel_GKI.sh" ]; then
+              echo "Executando build_kernel_GKI.sh..."
+              chmod +x build_kernel_GKI.sh
+              
+              # Exportar PATH novamente para garantir
+              export PATH="${GITHUB_WORKSPACE}/toolchain/clang/bin:$PATH"
+              
+              # Executar com logging detalhado
+              HERMETIC_TOOLCHAIN=0 ./build_kernel_GKI.sh 2>&1 | tee build_output.log
+          elif [ -d "kernel_platform" ]; then
+              echo "Usando kernel_platform..."
+              cd kernel_platform
+              
+              if [ -f "build/build.sh" ]; then
+                  echo "Executando build.sh..."
+                  ./build/build.sh \
+                    --config=./msm-kernel/build.config.msm.waipio.sec \
+                    --variant=gki \
+                    --skip-mrproper 2>&1 | tee build_output.log
+              else
+                  echo "Build manual..."
+                  
+                  OUT_DIR="../out/waipio_gki"
+                  mkdir -p "$OUT_DIR"
+                  
+                  # Config
+                  make -C common O="$OUT_DIR" \
+                    ARCH=arm64 \
+                    LLVM=1 LLVM_IAS=1 \
+                    CC=clang LD=ld.lld \
+                    CROSS_COMPILE=aarch64-linux-gnu- \
+                    gki_defconfig 2>&1 | tee config.log
+                  
+                  # Build
+                  make -C common O="$OUT_DIR" \
+                    ARCH=arm64 \
+                    LLVM=1 LLVM_IAS=1 \
+                    CC=clang LD=ld.lld \
+                    CROSS_COMPILE=aarch64-linux-gnu- \
+                    -j$(nproc) 2>&1 | tee make.log
+              fi
+          else
+              echo "ERRO: Nenhum script ou estrutura de kernel encontrada!"
+              exit 1
+          fi
+          
+          echo "=== BUILD FINALIZADO ==="
+
+      - name: Coletar Artefatos
+        run: |
+          set -e
+          
+          echo "=== COLETANDO ARTEFATOS ==="
+          
+          mkdir -p "${GITHUB_WORKSPACE}/artifacts"
+          mkdir -p "${GITHUB_WORKSPACE}/artifacts/modules"
+          
+          # Buscar vendor_boot.img
+          echo "Procurando vendor_boot.img..."
+          find "${GITHUB_WORKSPACE}" -name "vendor_boot.img" -type f | head -5 | while read img; do
+            echo "Encontrado: $img"
+            cp "$img" "${GITHUB_WORKSPACE}/artifacts/"
+          done
+          
+          # Buscar Image (kernel)
+          echo "Procurando Image..."
+          find "${GITHUB_WORKSPACE}" -type f \( -name "Image" -o -name "Image.gz" -o -name "Image.lz4" \) | head -5 | while read img; do
+            echo "Kernel: $img"
+            cp "$img" "${GITHUB_WORKSPACE}/artifacts/"
+          done
+          
+          # Buscar módulos .ko
+          echo "Procurando módulos .ko..."
+          find "${GITHUB_WORKSPACE}" -name "*.ko" -type f | head -50 | while read ko; do
+            echo "Módulo: $(basename $ko)"
+            cp "$ko" "${GITHUB_WORKSPACE}/artifacts/modules/"
+          done
+          
+          # Listar conteúdo
+          echo "Conteúdo de artifacts:"
+          ls -la "${GITHUB_WORKSPACE}/artifacts/"
+          echo "Conteúdo de artifacts/modules:"
+          ls -la "${GITHUB_WORKSPACE}/artifacts/modules/" | head -20
+
+      - name: Criar Archive
+        run: |
+          set -e
+          
+          cd "${GITHUB_WORKSPACE}/artifacts"
+          
+          # Criar arquivo com data
+          DATE=$(date +%Y%m%d_%H%M%S)
+          zip -r "../kernel_build_${DATE}.zip" .
+          
+          echo "Arquivo criado: kernel_build_${DATE}.zip"
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-aosp-build
+          name: kernel-build-waipio
           path: |
-            vendor_boot.img
-            *.ko
+            kernel_build_*.zip
+            build_output.log
           retention-days: 7
+
+      - name: Upload Logs em caso de falha
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-failure-logs
+          path: |
+            **/*.log
+            out/**/*.log
+            kernel_platform/*.log
+          retention-days: 30
