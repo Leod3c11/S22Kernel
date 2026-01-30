@@ -251,7 +251,7 @@ jobs:
           
           echo "=== BUILD FINALIZADO COM SUCESSO ==="
           
-          # Salvar status
+          # Salvar status - FORMATO CORRETO para outputs
           echo "success=true" >> $GITHUB_OUTPUT
 
       - name: Coletar e Verificar Artefatos
@@ -366,8 +366,7 @@ EOF
             config.log
             make.log
             modules.log
-            **/*.log
-          if-no-files-found: warn
+          if-no-files-found: ignore
           retention-days: 30
 
       - name: Notificar Falha
