@@ -1,64 +1,120 @@
-name: Build Only Kernel Modules
+name: Build S22 Kernel Modules Only (GKI)
 
 on:
   workflow_dispatch:
-    inputs:
-      module_path:
-        description: 'Caminho do módulo (ex: drivers/staging/qcacld-3.0)'
-        required: true
-        default: 'drivers/staging/qcacld-3.0'
+  push:
+    branches:
+      - main
+    paths:
+      - 'kernel_platform/**'
+      - 'msm-kernel/**'
 
 jobs:
   build-modules:
-    runs-on: ubuntu-22.04
-    
-    env:
-      ARCH: arm64
-      SUBARCH: arm64
-      LLVM: 1
-      LLVM_IAS: 1
-      CC: clang
-      LD: ld.lld
-    
+    runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      
-      - name: Baixar build pré-existente
-        uses: dawidd6/action-download-artifact@v2
-        with:
-          workflow: kernel-build.yml  # Seu workflow principal
-          name: kernel-build-artifacts
-          path: prebuilt/
-      
-      - name: Setup Environment
-        run: |
-          # Configurar toolchain
-          export PATH="${{ github.workspace }}/toolchain/proton-clang/bin:$PATH"
-          
-          # Extrair config do build anterior
-          if [ -f "prebuilt/.config" ]; then
-            cp prebuilt/.config kernel_platform/common/
-          fi
-      
-      - name: Build Specific Module
-        run: |
-          cd kernel_platform
-          
-          MODULE_PATH="${{ github.event.inputs.module_path }}"
-          
-          echo "Building module: $MODULE_PATH"
-          
-          # Build apenas o módulo
-          make -C common O=../out/module_build \
-            LLVM=1 LLVM_IAS=1 LD=ld.lld \
-            M="$MODULE_PATH" -j$(nproc)
-          
-          # Coletar o módulo compilado
-          find ../out/module_build -name "*.ko" -exec cp {} ../ \;
-      
-      - name: Upload Module
-        uses: actions/upload-artifact@v4
-        with:
-          name: kernel-module
-          path: "*.ko"
+    # ===============================
+    # CHECKOUT
+    # ===============================
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        submodules: true
+
+    # ===============================
+    # DEPENDÊNCIAS
+    # ===============================
+    - name: Install Build Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          bc bison build-essential flex libssl-dev \
+          libncurses5-dev libelf-dev binutils-dev \
+          rsync wget tar \
+          clang lld llvm device-tree-compiler
+
+        which clang
+        which ld.lld
+
+    # ===============================
+    # CLANG AOSP
+    # ===============================
+    - name: Download Clang AOSP (r416183b)
+      run: |
+        TOOLCHAIN_DIR="kernel_platform/prebuilts-master/clang/host/linux-x86"
+        CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12L-gsi/clang-r416183b.tar.gz"
+
+        mkdir -p $TOOLCHAIN_DIR
+        cd $TOOLCHAIN_DIR
+
+        wget $CLANG_URL -O clang.tar.gz
+        mkdir clang-r416183b
+        tar -C clang-r416183b -xzf clang.tar.gz
+        rm clang.tar.gz
+
+        cd -
+
+    # ===============================
+    # PREPARE BUILD (MODULES ONLY)
+    # ===============================
+    - name: Prepare Modules Build
+      run: |
+        rm -rf kernel_platform/build/build-tools/path/linux-x86
+
+        cat <<EOF > build_modules.sh
+        #!/bin/bash
+        set -e
+
+        # Build leve
+        export MAKEFLAGS="-j4"
+
+        # GKI / LLVM
+        export HERMETIC_TOOLCHAIN=0
+        export LLVM=1
+        export LLVM_IAS=1
+        export LD=ld.lld
+
+        export CLANG_PREBUILT_BIN=kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin
+        export PATH=\$CLANG_PREBUILT_BIN:/usr/bin:/bin:/usr/sbin:/sbin:\$PATH
+
+        export BISON=/usr/bin/bison
+        export FLEX=/usr/bin/flex
+        export M4=/usr/bin/m4
+
+        # Gera config GKI
+        make gki_defconfig
+
+        # Prepara headers
+        make modules_prepare
+
+        # Compila APENAS módulos
+        make modules
+
+        # Instala módulos
+        make modules_install INSTALL_MOD_PATH=out/modules
+
+        # Empacota
+        cd out/modules
+        zip -r ../../modules-only.zip .
+        EOF
+
+        chmod +x build_modules.sh
+
+    # ===============================
+    # BUILD MODULES
+    # ===============================
+    - name: Build Kernel Modules Only
+      run: |
+        ./build_modules.sh
+
+    # ===============================
+    # ARTEFATOS
+    # ===============================
+    - name: Upload Modules
+      uses: actions/upload-artifact@v4
+      with:
+        name: s22-kernel-modules-only
+        path: |
+          modules-only.zip
+        retention-days: 7
