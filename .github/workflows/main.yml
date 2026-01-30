@@ -15,6 +15,9 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
+    # ===============================
+    # CHECKOUT
+    # ===============================
     - name: Checkout Repository
       uses: actions/checkout@v4
       with:
@@ -37,6 +40,19 @@ jobs:
         which ld.lld
         clang --version
         ld.lld --version
+
+    # ===============================
+    # SWAP (CRÍTICO PARA LTO)
+    # ===============================
+    - name: Setup Swap Space (OOM fix)
+      run: |
+        echo "🧠 Criando swap de 8GB"
+        sudo swapoff -a || true
+        sudo dd if=/dev/zero of=/swapfile bs=1M count=8192
+        sudo chmod 600 /swapfile
+        sudo mkswap /swapfile
+        sudo swapon /swapfile
+        free -h
 
     # ===============================
     # UFDT (DTBO OVERLAY TOOL)
@@ -87,12 +103,14 @@ jobs:
     # ===============================
     - name: Prepare Environment and Fix Build Paths
       run: |
-        # Remover toolchain hermético quebrado
         rm -rf kernel_platform/build/build-tools/path/linux-x86
         
         cat <<EOF > my_build.sh
         #!/bin/bash
         set -e
+
+        # 🔥 CRÍTICO PARA NÃO MORRER NO LTO
+        export MAKEFLAGS="-j4"
 
         # Desativar modo hermético
         export HERMETIC_TOOLCHAIN=0
@@ -113,7 +131,6 @@ jobs:
         export FLEX=/usr/bin/flex
         export M4=/usr/bin/m4
 
-        # Build
         bash build_kernel_GKI.sh
         EOF
         
