@@ -13,7 +13,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout Repository
       uses: actions/checkout@v4
@@ -22,86 +22,83 @@ jobs:
 
     - name: Setup Swap Space (Robust Memory Mitigation)
       run: |
-        # Desativa qualquer swap existente no arquivo /swapfile
         sudo swapoff /swapfile 2>/dev/null || true
-        
-        # Cria um novo arquivo de swap de 8GB usando dd (mais robusto que fallocate em alguns ambientes)
         sudo dd if=/dev/zero of=/swapfile bs=1M count=8192
         sudo chmod 600 /swapfile
         sudo mkswap /swapfile
         sudo swapon /swapfile
-        echo "Swap space created and activated."
         free -h
 
     - name: Install Build Dependencies
       run: |
         sudo apt-get update
-        # Dependências essenciais para compilação de kernel Android (GKI)
-        sudo apt-get install -y bc bison build-essential flex libssl-dev libncurses5-dev libelf-dev binutils-dev qemu-user-static rsync wget tar
+        sudo apt-get install -y \
+          bc bison build-essential flex libssl-dev \
+          libncurses5-dev libelf-dev binutils-dev \
+          qemu-user-static rsync wget tar
 
     - name: Download and Configure Clang Toolchain (r416183b)
       run: |
         TOOLCHAIN_DIR="kernel_platform/prebuilts-master/clang/host/linux-x86"
         CLANG_TAR="clang-r416183b.tar.gz"
         CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12L-gsi/clang-r416183b.tar.gz"
-        
-        echo "Downloading Clang from: $CLANG_URL"
+
         mkdir -p $TOOLCHAIN_DIR
         cd $TOOLCHAIN_DIR
-        
-        # Baixar e extrair o toolchain necessário
+
         wget $CLANG_URL -O $CLANG_TAR
         mkdir clang-r416183b
         tar -C clang-r416183b -xzf $CLANG_TAR
         rm $CLANG_TAR
-        
-        # Voltar para o diretório raiz
         cd -
 
-    - name: Build libufdt (ufdt_apply_overlay fix)
+    - name: Build libufdt (ufdt_apply_overlay)
       run: |
-        # O repositório já tem o código-fonte em kernel_platform/tools/libufdt
         cd kernel_platform/tools/libufdt
         make
-        # O binário ufdt_apply_overlay é gerado em kernel_platform/tools/libufdt/utils/src/
         cd -
 
-    - name: Prepare Environment and Fix Build Paths
+    - name: Install ufdt_apply_overlay globally (FIX DEFINITIVO)
       run: |
-        # 1. Remover o diretório problemático que causa conflito com as ferramentas do sistema
+        sudo cp kernel_platform/tools/libufdt/utils/src/ufdt_apply_overlay /usr/local/bin/
+        sudo chmod +x /usr/local/bin/ufdt_apply_overlay
+        which ufdt_apply_overlay
+        ufdt_apply_overlay --help || true
+
+    - name: Prepare Environment
+      run: |
+        # Remove path hermético bugado
         rm -rf kernel_platform/build/build-tools/path/linux-x86
-        
-        # 2. Criar e configurar o script de compilação
-        cat <<EOF > my_build.sh
+
+        cat <<'EOF' > my_build.sh
         #!/bin/bash
-        # Definir o número máximo de threads para compilação (para economizar memória)
+        set -e
+
+        # Limitar paralelismo (memória)
         export MAKEFLAGS="-j4"
-        
-        # Desativar o modo hermético para usar o toolchain baixado
+
+        # Desativar toolchain hermético
         export HERMETIC_TOOLCHAIN=0
-        # Definir o caminho para o binário do Clang
-        export CLANG_PREBUILT_BIN=kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin
-        
-        # Adicionar o caminho do ufdt_apply_overlay ao PATH
-        export PATH=\$PATH:$(pwd)/kernel_platform/tools/libufdt/utils/src
-        
-        # Forçar PATH para priorizar ferramentas do sistema e garantir que bison/flex sejam encontrados
-        export PATH=/usr/bin:/bin:/usr/sbin:/sbin:\$PATH
-        
-        # Definir explicitamente ferramentas (segurança extra)
+
+        # Clang correto
+        export CLANG_PREBUILT_BIN=$(pwd)/kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin
+
+        # PATH limpo e previsível
+        export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$CLANG_PREBUILT_BIN
+
+        # Ferramentas explícitas
         export BISON=/usr/bin/bison
         export FLEX=/usr/bin/flex
         export M4=/usr/bin/m4
-        
-        # Executar o script de compilação principal
+
+        # Build principal
         bash build_kernel_GKI.sh
         EOF
-        
+
         chmod +x my_build.sh
 
     - name: Build Kernel
       run: |
-        # Executar o script personalizado
         ./my_build.sh
 
     - name: Find and Upload Artifacts
@@ -109,10 +106,10 @@ jobs:
       with:
         name: s22-kernel-artifacts
         path: |
-          out/msm-waipio-waipio-gki/dist/Image.lz4
           out/msm-waipio-waipio-gki/dist/Image
-          out/msm-waipio-waipio-gki/dist/modules.zip
+          out/msm-waipio-waipio-gki/dist/Image.lz4
           out/msm-waipio-waipio-gki/dist/vmlinux
+          out/msm-waipio-waipio-gki/dist/modules.zip
           out/msm-waipio-waipio-gki/dist/*.dtbo
         if-no-files-found: error
         retention-days: 7
