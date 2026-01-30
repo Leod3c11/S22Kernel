@@ -1,66 +1,93 @@
-name: Build vendor_boot.img (Fixed)
+name: Build S22 Kernel (kernel_platform)
 
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches:
+      - main
+    paths:
+      - 'kernel_platform/**'
+      - 'msm-kernel/**'
+      - 'build_kernel_GKI.sh'
 
 jobs:
   build:
     runs-on: ubuntu-latest
     
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-        with:
-          submodules: 'recursive'
-          fetch-depth: 1
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        # O repositório é grande, mas o --depth 1 já foi usado no git clone do script.
+        # Para o checkout inicial, vamos manter o padrão.
+        submodules: true
 
-      - name: Install Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bc build-essential flex bison git-lfs libssl-dev libelf-dev \
-            python3 python3-pip python-is-python3 repo \
-            cpio zip unzip tar gzip bzip2 lz4 liblz4-tool sed tr coreutils findutils
+    - name: Install Build Dependencies
+      run: |
+        sudo apt-get update
+        # Dependências essenciais para compilação de kernel Android (GKI)
+        sudo apt-get install -y bc bison build-essential flex libssl-dev libncurses5-dev libelf-dev binutils-dev qemu-user-static rsync wget tar
 
-      - name: Fix PATH and Run Build
-        run: |
-          # Criar um wrapper para o script de build que preserva o PATH do sistema
-          # O script original parece estar limpando o PATH ou definindo-o de forma restritiva.
-          
-          export ANDROID_BUILD_TOP=$(pwd)
-          export OUT_DIR=$(pwd)/out
-          
-          # Garantir permissões
-          chmod +x build_kernel_GKI.sh
-          find kernel_platform/build/ -name "*.sh" -exec chmod +x {} +
-          chmod +x kernel_platform/build/brunch
-          
-          # Executar o build injetando o PATH do sistema no início da variável PATH
-          # para que comandos como 'nproc', 'sed', etc, sejam encontrados em /usr/bin ou /bin
-          
-          SYSTEM_PATH=$PATH
-          
-          # Algumas builds da Samsung/Qualcomm esperam que o PATH seja manipulado.
-          # Vamos tentar rodar o script garantindo que os binários essenciais existam.
-          # Se o script interno fizer "PATH=...", ele vai quebrar. 
-          # Uma solução comum é linkar ferramentas essenciais para dentro de uma das pastas que o script define.
-          
-          mkdir -p kernel_platform/prebuilts/gcc/linux-x86/host/bin
-          for cmd in nproc readlink sed tr grep awk find xargs; do
-            ln -sf $(which $cmd) kernel_platform/prebuilts/gcc/linux-x86/host/bin/$cmd
-          done
-          export PATH=$(pwd)/kernel_platform/prebuilts/gcc/linux-x86/host/bin:$PATH
-          
-          ./build_kernel_GKI.sh
+    - name: Download and Configure Clang Toolchain (r416183b)
+      run: |
+        TOOLCHAIN_DIR="kernel_platform/prebuilts-master/clang/host/linux-x86"
+        CLANG_TAR="clang-r416183b.tar.gz"
+        CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12L-gsi/clang-r416183b.tar.gz"
+        
+        echo "Downloading Clang from: $CLANG_URL"
+        mkdir -p $TOOLCHAIN_DIR
+        cd $TOOLCHAIN_DIR
+        
+        # Baixar e extrair o toolchain necessário
+        wget $CLANG_URL -O $CLANG_TAR
+        mkdir clang-r416183b
+        tar -C clang-r416183b -xzf $CLANG_TAR
+        rm $CLANG_TAR
+        
+        # Voltar para o diretório raiz
+        cd -
 
-      - name: Verify and Upload Artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: kernel-build-output
-          path: |
-            out/**/dist/vendor_boot.img
-            out/**/dist/Image
-            out/**/dist/*.ko
-          if-no-files-found: warn
+    - name: Prepare Environment and Fix Build Paths
+      run: |
+        # 1. Remover o diretório problemático que causa conflito com as ferramentas do sistema
+        # Isso força o script a usar as ferramentas instaladas via apt (bison, flex, etc.)
+        rm -rf kernel_platform/build/build-tools/path/linux-x86
+        
+        # 2. Criar e configurar o script de compilação
+        cat <<EOF > my_build.sh
+        #!/bin/bash
+        # Desativar o modo hermético para usar o toolchain baixado
+        export HERMETIC_TOOLCHAIN=0
+        # Definir o caminho para o binário do Clang
+        export CLANG_PREBUILT_BIN=kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin
+        
+        # Forçar PATH para priorizar ferramentas do sistema e garantir que bison/flex sejam encontrados
+        export PATH=/usr/bin:/bin:/usr/sbin:/sbin:\$PATH
+        
+        # Definir explicitamente ferramentas (segurança extra)
+        export BISON=/usr/bin/bison
+        export FLEX=/usr/bin/flex
+        export M4=/usr/bin/m4
+        
+        # Executar o script de compilação principal
+        bash build_kernel_GKI.sh
+        EOF
+        
+        chmod +x my_build.sh
+
+    - name: Build Kernel
+      run: |
+        # Executar o script personalizado
+        ./my_build.sh
+
+    - name: Find and Upload Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: s22-kernel-artifacts
+        path: |
+          out/msm-waipio-waipio-gki/dist/Image.lz4
+          out/msm-waipio-waipio-gki/dist/Image
+          out/msm-waipio-waipio-gki/dist/modules.zip
+          out/msm-waipio-waipio-gki/dist/vmlinux
+        if-no-files-found: error
+        retention-days: 7
