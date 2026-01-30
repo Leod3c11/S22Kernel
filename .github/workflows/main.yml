@@ -1,379 +1,57 @@
-name: Kernel Build (Waipio GKI - AOSP Clang r450784d)
+name: Build vendor_boot.img
 
 on:
+  workflow_dispatch:
   push:
     branches: [ main ]
-  workflow_dispatch:
+    paths:
+      - 'kernel_platform/**'
+      - 'build_kernel_GKI.sh'
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
-
+    runs-on: ubuntu-latest
+    
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-          submodules: recursive
+          submodules: 'recursive'
+          fetch-depth: 1
 
-      - name: Instalar Dependências
+      - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            git build-essential python3 bc flex bison \
-            libssl-dev libelf-dev cpio unzip wget xz-utils \
-            file rsync curl lld llvm \
-            libncurses-dev libc6-dev gcc-aarch64-linux-gnu \
-            gcc-arm-linux-gnueabi kmod libxml2-utils \
-            clang-14 lld-14 llvm-14 libgmp-dev libmpc-dev libmpfr-dev \
-            gcc-11 g++-11 ccache
+          sudo apt-get install -y bc build-essential flex bison git-lfs libssl-dev libelf-dev \
+            python3 python3-pip python-is-python3 repo \
+            cpio zip unzip tar gzip bzip2 lz4 liblz4-tool
 
-      - name: Baixar AOSP Clang r450784d (COMANDO EXATO)
+      - name: Set Environment Variables
         run: |
-          set -e
-          
-          echo "=== BAIXANDO AOSP CLANG r450784d ==="
-          echo "Usando o comando EXATO fornecido..."
-          
-          CLANG_DIR="${GITHUB_WORKSPACE}/toolchain/clang"
-          mkdir -p $CLANG_DIR
-          cd $CLANG_DIR
-          
-          # Verificar se já tem clang
-          if [ -f "bin/clang" ] || [ -f "clang" ]; then
-            echo "Clang já existe, pulando download."
-          else
-            echo "-----------------------------------------------"
-            echo "Toolchain not found! Downloading..."
-            echo "-----------------------------------------------"
-            
-            # COMANDO EXATO QUE VOCÊ FORNECEU
-            echo "Executando: curl -LJOk https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-13.0.0_r13/clang-r450784d.tar.gz"
-            
-            curl -LJOk "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-13.0.0_r13/clang-r450784d.tar.gz"
-            
-            # Verificar qual arquivo foi baixado
-            echo "Arquivos baixados:"
-            ls -la *.tar.gz || true
-            
-            # Extrair (o curl com -J pode nomear o arquivo de formas diferentes)
-            if [ -f "android-13.0.0_r13-clang-r450784d.tar.gz" ]; then
-                echo "Extraindo android-13.0.0_r13-clang-r450784d.tar.gz..."
-                tar xf "android-13.0.0_r13-clang-r450784d.tar.gz"
-                rm "android-13.0.0_r13-clang-r450784d.tar.gz"
-            elif [ -f "clang-r450784d.tar.gz" ]; then
-                echo "Extraindo clang-r450784d.tar.gz..."
-                tar xf "clang-r450784d.tar.gz"
-                rm "clang-r450784d.tar.gz"
-            else
-                echo "Nenhum arquivo tar.gz encontrado após download."
-                echo "Tentando listar todos os arquivos:"
-                ls -la
-                echo "Usando fallback para clang do sistema..."
-            fi
-            
-            echo "Cleaning up..."
-          fi
-          
-          # Garantir que temos bin/clang
-          if [ ! -f "bin/clang" ] && [ -f "clang" ]; then
-            echo "Movendo clang para bin/"
-            mkdir -p bin
-            mv clang* bin/ 2>/dev/null || true
-          fi
-          
-          # Configurar fallback se necessário
-          if [ ! -f "bin/clang" ]; then
-            echo "Configurando fallback com clang do sistema..."
-            mkdir -p bin
-            ln -sf /usr/bin/clang-14 bin/clang 2>/dev/null || ln -sf /usr/bin/clang bin/clang
-            ln -sf /usr/bin/clang++-14 bin/clang++ 2>/dev/null || ln -sf /usr/bin/clang++ bin/clang++
-            ln -sf /usr/bin/ld.lld-14 bin/ld.lld 2>/dev/null || ln -sf /usr/bin/ld.lld bin/ld.lld
-            ln -sf /usr/bin/ld.lld-14 bin/ld 2>/dev/null || ln -sf /usr/bin/ld.lld bin/ld
-            ln -sf /usr/bin/llvm-ar-14 bin/llvm-ar 2>/dev/null || ln -sf /usr/bin/llvm-ar bin/llvm-ar
-            ln -sf /usr/bin/llvm-nm-14 bin/llvm-nm 2>/dev/null || ln -sf /usr/bin/llvm-nm bin/llvm-nm
-          fi
-          
-          # Adicionar ao PATH
-          echo "${CLANG_DIR}/bin" >> $GITHUB_PATH
-          
-          echo "=== VERIFICAÇÃO FINAL ==="
-          echo "Conteúdo de ${CLANG_DIR}/bin:"
-          ls -la ${CLANG_DIR}/bin/ 2>/dev/null || echo "Diretório bin não encontrado"
-          echo "PATH atualizado."
+          echo "ANDROID_BUILD_TOP=$(pwd)" >> $GITHUB_ENV
+          echo "OUT_DIR=$(pwd)/out" >> $GITHUB_ENV
+          # O script original usa caminhos relativos para toolchains que podem não existir no repo.
+          # Vamos garantir que o PATH inclua ferramentas necessárias se o repo as fornecer.
+          echo "$(pwd)/kernel_platform/gcc/linux-x86_64/x86_64-linux-gnu/bin" >> $GITHUB_PATH
 
-      - name: Configurar Variáveis de Ambiente
+      - name: Run Build Script
         run: |
-          set -e
+          chmod +x build_kernel_GKI.sh
+          chmod +x kernel_platform/build/android/prepare_vendor.sh
+          chmod +x kernel_platform/build/build.sh
+          chmod +x kernel_platform/build/brunch
           
-          echo "=== CONFIGURANDO VARIÁVEIS DE BUILD ==="
-          
-          # Testar toolchain
-          export PATH="${GITHUB_WORKSPACE}/toolchain/clang/bin:$PATH"
-          
-          echo "Clang versão:"
-          clang --version 2>&1 | head -5 || echo "Clang não disponível"
-          
-          echo "ld.lld versão:"
-          ld.lld --version 2>&1 | head -2 || echo "ld.lld não disponível"
-          
-          # Exportar todas as variáveis necessárias
-          {
-            echo "ARCH=arm64"
-            echo "SUBARCH=arm64"
-            echo "LLVM=1"
-            echo "LLVM_IAS=1"
-            echo "CC=clang"
-            echo "CXX=clang++"
-            echo "LD=ld.lld"
-            echo "AR=llvm-ar"
-            echo "NM=llvm-nm"
-            echo "OBJCOPY=llvm-objcopy"
-            echo "OBJDUMP=llvm-objdump"
-            echo "STRIP=llvm-strip"
-            echo "CLANG_TRIPLE=aarch64-linux-gnu-"
-            echo "CROSS_COMPILE=aarch64-linux-gnu-"
-            echo "CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
-            echo "HERMETIC_TOOLCHAIN=0"
-            echo "KBUILD_BUILD_USER=github"
-            echo "KBUILD_BUILD_HOST=actions"
-          } >> $GITHUB_ENV
-          
-          echo "Variáveis configuradas com sucesso!"
+          # O script build_kernel_GKI.sh executa o prepare_vendor.sh
+          # Vamos rodar o script principal do usuário
+          ./build_kernel_GKI.sh
 
-      - name: Preparar Build Environment
-        run: |
-          set -e
-          
-          echo "=== PREPARANDO AMBIENTE DE BUILD ==="
-          
-          # Garantir permissões
-          chmod +x *.sh 2>/dev/null || true
-          find . -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
-          
-          # Criar diretórios necessários
-          mkdir -p out/target/product/g0q/
-          mkdir -p kernel_platform/out
-          
-          # Verificar estrutura do projeto
-          echo "Estrutura do projeto:"
-          ls -la
-          echo "Kernel platform:"
-          ls -la kernel_platform/ 2>/dev/null || echo "kernel_platform não encontrado"
-
-      - name: Build Kernel
-        id: build_kernel
-        run: |
-          set -e
-          
-          echo "=== INICIANDO BUILD DO KERNEL ==="
-          echo "Timestamp: $(date)"
-          
-          # Configurar PATH final
-          export PATH="${GITHUB_WORKSPACE}/toolchain/clang/bin:$PATH"
-          
-          # Verificar ferramentas críticas
-          echo "Ferramentas disponíveis:"
-          which clang || echo "WARNING: clang não encontrado"
-          which ld.lld || echo "WARNING: ld.lld não encontrado"
-          which aarch64-linux-gnu-gcc || echo "WARNING: cross-compiler não encontrado"
-          
-          # Tentar diferentes métodos de build
-          BUILD_SUCCESS=false
-          
-          # Método 1: build_kernel_GKI.sh (se existir)
-          if [ -f "build_kernel_GKI.sh" ]; then
-            echo ">>> Método 1: Executando build_kernel_GKI.sh"
-            chmod +x build_kernel_GKI.sh
-            if HERMETIC_TOOLCHAIN=0 ./build_kernel_GKI.sh 2>&1 | tee build.log; then
-              BUILD_SUCCESS=true
-              echo "Build bem-sucedido com build_kernel_GKI.sh"
-            fi
-          fi
-          
-          # Método 2: kernel_platform/build/build.sh
-          if [ "$BUILD_SUCCESS" = false ] && [ -f "kernel_platform/build/build.sh" ]; then
-            echo ">>> Método 2: Executando kernel_platform/build/build.sh"
-            cd kernel_platform
-            chmod +x build/build.sh
-            if ./build/build.sh \
-                --config=./msm-kernel/build.config.msm.waipio.sec \
-                --variant=gki \
-                --skip-mrproper 2>&1 | tee ../build.log; then
-              BUILD_SUCCESS=true
-              echo "Build bem-sucedido com build.sh"
-            fi
-            cd ..
-          fi
-          
-          # Método 3: Build manual
-          if [ "$BUILD_SUCCESS" = false ] && [ -d "kernel_platform" ]; then
-            echo ">>> Método 3: Build manual"
-            cd kernel_platform
-            
-            OUT_DIR="../out/waipio_gki"
-            mkdir -p "$OUT_DIR"
-            
-            echo "Configurando defconfig..."
-            make -C common O="$OUT_DIR" \
-              ARCH=arm64 \
-              LLVM=1 LLVM_IAS=1 \
-              CC=clang LD=ld.lld \
-              CROSS_COMPILE=aarch64-linux-gnu- \
-              gki_defconfig 2>&1 | tee config.log
-              
-            echo "Compilando kernel..."
-            make -C common O="$OUT_DIR" \
-              ARCH=arm64 \
-              LLVM=1 LLVM_IAS=1 \
-              CC=clang LD=ld.lld \
-              CROSS_COMPILE=aarch64-linux-gnu- \
-              -j$(nproc) 2>&1 | tee make.log
-              
-            echo "Compilando módulos..."
-            make -C common O="$OUT_DIR" \
-              ARCH=arm64 \
-              LLVM=1 LLVM_IAS=1 \
-              CC=clang LD=ld.lld \
-              CROSS_COMPILE=aarch64-linux-gnu- \
-              modules -j$(nproc) 2>&1 | tee modules.log
-              
-            BUILD_SUCCESS=true
-            cd ..
-          fi
-          
-          if [ "$BUILD_SUCCESS" = false ]; then
-            echo "ERRO: Todos os métodos de build falharam!"
-            echo "Logs disponíveis:"
-            ls -la *.log 2>/dev/null || echo "Nenhum log encontrado"
-            exit 1
-          fi
-          
-          echo "=== BUILD FINALIZADO COM SUCESSO ==="
-          
-          # Salvar status - FORMATO CORRETO para outputs
-          echo "success=true" >> $GITHUB_OUTPUT
-
-      - name: Coletar e Verificar Artefatos
-        if: steps.build_kernel.outputs.success == 'true'
-        run: |
-          set -e
-          
-          echo "=== COLETANDO ARTEFATOS ==="
-          
-          ARTIFACTS_DIR="${GITHUB_WORKSPACE}/artifacts"
-          mkdir -p "${ARTIFACTS_DIR}"
-          mkdir -p "${ARTIFACTS_DIR}/modules"
-          
-          echo "Procurando vendor_boot.img..."
-          VENDOR_BOOT_COUNT=0
-          find "${GITHUB_WORKSPACE}" -type f -name "vendor_boot.img" | while read img; do
-            echo "Encontrado: $img"
-            cp "$img" "${ARTIFACTS_DIR}/"
-            VENDOR_BOOT_COUNT=$((VENDOR_BOOT_COUNT + 1))
-          done
-          
-          echo "Procurando kernel Image..."
-          find "${GITHUB_WORKSPACE}" -type f \( -name "Image" -o -name "Image.gz" -o -name "Image.lz4" \) | while read img; do
-            echo "Kernel: $img"
-            cp "$img" "${ARTIFACTS_DIR}/"
-          done
-          
-          echo "Procurando módulos .ko..."
-          KO_COUNT=0
-          find "${GITHUB_WORKSPACE}" -type f -name "*.ko" | head -100 | while read ko; do
-            echo "Módulo: $(basename "$ko")"
-            cp "$ko" "${ARTIFACTS_DIR}/modules/"
-            KO_COUNT=$((KO_COUNT + 1))
-          done
-          
-          echo "Procurando DTBs..."
-          find "${GITHUB_WORKSPACE}" -type f \( -name "*.dtb" -o -name "dtbo.img" -o -name "*.dtbo" \) | while read dtb; do
-            echo "DTB: $dtb"
-            cp "$dtb" "${ARTIFACTS_DIR}/"
-          done
-          
-          echo "=== RESUMO ==="
-          echo "vendor_boot.img encontrados: $VENDOR_BOOT_COUNT"
-          echo "Módulos .ko encontrados: $KO_COUNT"
-          echo ""
-          echo "Conteúdo de artifacts:"
-          ls -la "${ARTIFACTS_DIR}/"
-          
-          if [ -d "${ARTIFACTS_DIR}/modules" ]; then
-            echo "Primeiros 10 módulos:"
-            ls -la "${ARTIFACTS_DIR}/modules/" | head -11
-          fi
-          
-          # Verificar se temos artefatos críticos
-          if [ $VENDOR_BOOT_COUNT -eq 0 ]; then
-            echo "AVISO: Nenhum vendor_boot.img encontrado!"
-            echo "Buscando em out/..."
-            find "${GITHUB_WORKSPACE}/out" -type f -name "*.img" | head -10
-          fi
-
-      - name: Criar Package
-        if: steps.build_kernel.outputs.success == 'true'
-        run: |
-          set -e
-          
-          echo "=== CRIANDO PACOTE ==="
-          
-          cd "${GITHUB_WORKSPACE}/artifacts"
-          
-          # Criar arquivo com timestamp
-          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-          GIT_HASH=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-          
-          ZIP_NAME="kernel_waipio_gki_${TIMESTAMP}_${GIT_HASH}.zip"
-          
-          echo "Criando: $ZIP_NAME"
-          zip -r "../${ZIP_NAME}" .
-          
-          # Criar arquivo de informações
-          cat > "../build_info.txt" << EOF
-Build Information:
-==================
-Timestamp: $(date)
-Git Commit: ${GIT_HASH}
-Kernel: Waipio GKI
-Toolchain: AOSP Clang r450784d
-System: Ubuntu 22.04
-Arch: arm64
-EOF
-          
-          echo "=== PACOTE CRIADO ==="
-          ls -lh "../${ZIP_NAME}" || echo "ZIP não criado"
-          echo "Arquivo de informações:"
-          cat "../build_info.txt"
-
-      - name: Upload Artifacts
-        if: steps.build_kernel.outputs.success == 'true'
+      - name: Verify and Upload Artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-build-artifacts
+          name: kernel-build-output
           path: |
-            kernel_waipio_gki_*.zip
-            build_info.txt
-          retention-days: 7
-
-      - name: Upload Logs de Build
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-logs
-          path: |
-            build.log
-            config.log
-            make.log
-            modules.log
-          if-no-files-found: ignore
-          retention-days: 30
-
-      - name: Notificar Falha
-        if: failure()
-        run: |
-          echo "=== BUILD FALHOU ==="
-          echo "Verifique os logs acima para detalhes."
-          echo ""
-          echo "Últimos logs:"
-          tail -50 build.log 2>/dev/null || echo "Nenhum log disponível"
+            out/msm-waipio-waipio-gki/dist/vendor_boot.img
+            out/msm-waipio-waipio-gki/dist/Image
+            out/msm-waipio-waipio-gki/dist/*.ko
+          if-no-files-found: warn
