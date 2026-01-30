@@ -13,107 +13,93 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-        # Necessário para repositórios grandes, se aplicável
         with:
           fetch-depth: 0
 
       - name: Instalar Dependências
         run: |
           sudo apt-get update
-          sudo apt-get install -y git make gcc g++ python3 bc flex bison libssl-dev libelf-dev cpio unzip wget xz-utils
+          sudo apt-get install -y git make gcc g++ python3 bc flex bison libssl-dev libelf-dev cpio unzip wget xz-utils zip
 
-      - name: Configurar Toolchain (AOSP Clang + GCC)
+      - name: Configurar Toolchain (ZyC Clang)
         id: toolchain
         run: |
-          # 1. Definir a versão do Clang e o diretório de instalação
-          CLANG_VERSION="r487747c" # Exemplo de uma versão estável do AOSP Clang
+          # 1. Criar diretório da toolchain
           TOOLCHAIN_DIR="${{ github.workspace }}/toolchain"
           mkdir -p $TOOLCHAIN_DIR
           
-          # 2. Baixar AOSP Clang (Exemplo: use o link correto para a versão do seu kernel)
-          # AOSP Clang é geralmente baixado de repositórios prebuilts do Google.
-          # É altamente recomendável usar uma toolchain compatível com a versão do seu kernel.
-          # Exemplo de download (Pode precisar ser ajustado):
-          CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-${CLANG_VERSION}.tar.gz"
-          wget -q $CLANG_URL -O clang.tar.gz
+          # 2. Baixar ZyC Clang (Versão estável e compatível com kernels modernos)
+          # Esta toolchain já inclui Clang, LLD e binutils necessários.
+          wget -q https://github.com/ZyCromerZ/Clang/releases/download/19.0.0git-20240212/ZyC-Clang-19.0.0git-20240212.tar.gz -O clang.tar.gz
           tar -xf clang.tar.gz -C $TOOLCHAIN_DIR
           
-          # 3. Baixar AOSP GCC (Necessário para o linker e alguns utilitários)
-          # Exemplo de download (Pode precisar ser ajustado):
-          GCC_URL="https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/master.tar.gz"
-          wget -q $GCC_URL -O gcc.tar.gz
-          tar -xf gcc.tar.gz -C $TOOLCHAIN_DIR/gcc-aarch64
+          # 3. Exportar Variáveis de Ambiente para o GitHub Actions
+          echo "$TOOLCHAIN_DIR/bin" >> $GITHUB_PATH
           
-          # 4. Exportar Variáveis de Ambiente
-          echo "TOOLCHAIN_DIR=$TOOLCHAIN_DIR" >> $GITHUB_ENV
-          echo "CLANG_PATH=$TOOLCHAIN_DIR/bin" >> $GITHUB_ENV
-          echo "GCC_PATH=$TOOLCHAIN_DIR/gcc-aarch64/bin" >> $GITHUB_ENV
-          echo "PATH=$TOOLCHAIN_DIR/bin:$TOOLCHAIN_DIR/gcc-aarch64/bin:$PATH" >> $GITHUB_ENV
+          # Configurações de compilação
+          {
+            echo "ARCH=arm64"
+            echo "SUBARCH=arm64"
+            echo "KBUILD_COMPILER_STRING=$(clang --version | head -n 1)"
+            echo "CLANG_PATH=$TOOLCHAIN_DIR/bin"
+            echo "CROSS_COMPILE=aarch64-linux-gnu-"
+            echo "CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
+            echo "CC=clang"
+            echo "AR=llvm-ar"
+            echo "NM=llvm-nm"
+            echo "OBJCOPY=llvm-objcopy"
+            echo "OBJDUMP=llvm-objdump"
+            echo "STRIP=llvm-strip"
+          } >> $GITHUB_ENV
           
-          # Variáveis de compilação
-          echo "ARCH=arm64" >> $GITHUB_ENV
-          echo "SUBARCH=arm64" >> $GITHUB_ENV
-          echo "CLANG_TRIPLE=aarch64-linux-gnu-" >> $GITHUB_ENV
-          echo "CROSS_COMPILE=aarch64-linux-android-" >> $GITHUB_ENV
-          echo "CROSS_COMPILE_ARM64=aarch64-linux-android-" >> $GITHUB_ENV
-          
-          # Verificar se o Clang está no PATH
-          clang --version
+          echo "Toolchain configurada com sucesso."
+          $TOOLCHAIN_DIR/bin/clang --version
 
       - name: Executar Build do Kernel (vendor_boot)
         run: |
-          # O script principal do seu repositório é build_kernel_GKI.sh
-          # Ele já configura o CHIPSET_NAME=waipio e o TARGET_PRODUCT=gki
+          # Dar permissão de execução aos scripts
+          chmod +x *.sh
+          chmod +x kernel_platform/build/*.sh
           
-          # Executar o script de build
+          # Executar o script de build principal
           ./build_kernel_GKI.sh
           
-          # O artefato final (vendor_boot.img) deve estar no diretório de saída
-          # O diretório de saída é definido dentro do build_kernel_GKI.sh como:
-          # OUT_DIR=$(ANDROID_PRODUCT_OUT)/out/msm-$(CHIPSET_NAME)-$(TARGET_PRODUCT)
-          # O script de build_kernel_GKI.sh define OUT_DIR como:
-          # ANDROID_BUILD_TOP/out/target/product/g0q_gbl_openx/out/msm-waipio-gki
-          
-          # Vamos simplificar o caminho de saída para o Actions:
-          BUILD_OUT_DIR=$(find . -type d -name "out" -path "*/out/msm-waipio-gki" | head -n 1)
+          # Localizar o diretório de saída (ajustado conforme a estrutura observada)
+          # O script gera os arquivos em: out/msm-waipio-gki
+          BUILD_OUT_DIR=$(find . -type d -name "msm-waipio-gki" | head -n 1)
           
           if [ -z "$BUILD_OUT_DIR" ]; then
-            echo "Erro: Diretório de saída do build não encontrado. Verifique o script build_kernel_GKI.sh."
+            echo "Erro: Diretório de saída msm-waipio-gki não encontrado."
+            # Listar diretórios para debug se falhar
+            find . -maxdepth 4 -type d
             exit 1
           fi
           
           echo "BUILD_OUT_DIR=$BUILD_OUT_DIR" >> $GITHUB_ENV
-          echo "Diretório de saída encontrado: $BUILD_OUT_DIR"
 
-      - name: Empacotar e Renomear Artefatos
+      - name: Empacotar Artefatos
         run: |
-          # 1. Encontrar a imagem vendor_boot.img
+          # Encontrar a imagem vendor_boot.img
           VENDOR_BOOT_IMG=$(find ${{ env.BUILD_OUT_DIR }} -name "vendor_boot.img" | head -n 1)
           
           if [ -z "$VENDOR_BOOT_IMG" ]; then
-            echo "Erro: vendor_boot.img não encontrado no diretório de saída."
+            echo "Erro: vendor_boot.img não encontrado."
             exit 1
           fi
           
-          # 2. Encontrar os módulos de kernel (.ko)
-          MODULES_DIR="${{ env.BUILD_OUT_DIR }}/vendor_ramdisk/lib/modules"
-          mkdir -p modules_output
+          # Preparar pasta de módulos
+          mkdir -p output/modules
+          cp $VENDOR_BOOT_IMG output/waipio_vendor_boot.img
           
-          if [ -d "$MODULES_DIR" ]; then
-            cp -r $MODULES_DIR modules_output/
-          else
-            echo "Aviso: Diretório de módulos não encontrado em $MODULES_DIR. O build pode ter falhado ou o caminho está incorreto."
-          fi
+          # Tentar copiar módulos (.ko) se existirem
+          find ${{ env.BUILD_OUT_DIR }} -name "*.ko" -exec cp {} output/modules/ \;
           
-          # 3. Mover e renomear a imagem final
-          mv $VENDOR_BOOT_IMG waipio_vendor_boot.img
-          
-          # 4. Criar um arquivo zip com todos os artefatos
-          zip -r waipio_kernel_artifacts.zip waipio_vendor_boot.img modules_output
+          # Criar o arquivo final
+          cd output && zip -r ../waipio_kernel_artifacts.zip .
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: waipio-kernel-build
+          name: waipio-vendor-boot-build
           path: waipio_kernel_artifacts.zip
           retention-days: 7
