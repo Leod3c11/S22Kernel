@@ -1,4 +1,4 @@
-name: Build S22 Kernel (kernel_platform) - Final Optimized
+name: Build S22 Kernel (kernel_platform) - UFDT Fix
 
 on:
   workflow_dispatch:
@@ -58,6 +58,14 @@ jobs:
         # Voltar para o diretório raiz
         cd -
 
+    - name: Build libufdt (ufdt_apply_overlay fix)
+      run: |
+        # O repositório já tem o código-fonte em kernel_platform/tools/libufdt
+        cd kernel_platform/tools/libufdt
+        make
+        # O binário ufdt_apply_overlay é gerado em kernel_platform/tools/libufdt/utils/src/
+        cd -
+
     - name: Prepare Environment and Fix Build Paths
       run: |
         # 1. Remover o diretório problemático que causa conflito com as ferramentas do sistema
@@ -67,13 +75,15 @@ jobs:
         cat <<EOF > my_build.sh
         #!/bin/bash
         # Definir o número máximo de threads para compilação (para economizar memória)
-        # O runner padrão tem 2 cores, mas 4 threads é um bom equilíbrio para a fase de linkagem
         export MAKEFLAGS="-j4"
         
         # Desativar o modo hermético para usar o toolchain baixado
         export HERMETIC_TOOLCHAIN=0
         # Definir o caminho para o binário do Clang
         export CLANG_PREBUILT_BIN=kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin
+        
+        # Adicionar o caminho do ufdt_apply_overlay ao PATH
+        export PATH=\$PATH:$(pwd)/kernel_platform/tools/libufdt/utils/src
         
         # Forçar PATH para priorizar ferramentas do sistema e garantir que bison/flex sejam encontrados
         export PATH=/usr/bin:/bin:/usr/sbin:/sbin:\$PATH
@@ -103,5 +113,6 @@ jobs:
           out/msm-waipio-waipio-gki/dist/Image
           out/msm-waipio-waipio-gki/dist/modules.zip
           out/msm-waipio-waipio-gki/dist/vmlinux
+          out/msm-waipio-waipio-gki/dist/*.dtbo
         if-no-files-found: error
         retention-days: 7
