@@ -17,19 +17,15 @@ jobs:
       LLVM_IAS: 1
       CROSS_COMPILE: aarch64-linux-gnu-
       CROSS_COMPILE_ARM32: arm-linux-gnueabi-
+      # CRÍTICO: Desativa o isolamento de ferramentas do GKI para usar as do sistema
+      HERMETIC_TOOLCHAIN: 0
 
     steps:
-      # ------------------------------------------------------------
-      # Checkout
-      # ------------------------------------------------------------
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ------------------------------------------------------------
-      # Dependências
-      # ------------------------------------------------------------
       - name: Instalar Dependências
         run: |
           sudo apt-get update
@@ -38,20 +34,16 @@ jobs:
             libssl-dev libelf-dev cpio unzip wget xz-utils zip \
             rsync file build-essential curl coreutils
 
-      # ------------------------------------------------------------
-      # Toolchain – Proton Clang
-      # ------------------------------------------------------------
       - name: Configurar Toolchain (Proton Clang)
         run: |
           set -e
-
           TOOLCHAIN_DIR="${GITHUB_WORKSPACE}/toolchain"
           mkdir -p "$TOOLCHAIN_DIR"
           cd "$TOOLCHAIN_DIR"
-
           echo "Clonando Proton Clang..."
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git
-
+          
+          # Adiciona ao PATH do GitHub Actions
           echo "${TOOLCHAIN_DIR}/proton-clang/bin" >> $GITHUB_PATH
 
           {
@@ -61,32 +53,30 @@ jobs:
             echo "OBJDUMP=llvm-objdump"
             echo "STRIP=llvm-strip"
             echo "LD=ld.lld"
-            echo "KBUILD_COMPILER_STRING=$(clang --version | head -n 1)"
+            echo "KBUILD_COMPILER_STRING=$( ${TOOLCHAIN_DIR}/proton-clang/bin/clang --version | head -n 1 )"
           } >> $GITHUB_ENV
 
-          clang --version
-
-      # ------------------------------------------------------------
-      # Build Kernel + vendor_boot
-      # ------------------------------------------------------------
       - name: Build Kernel (Waipio GKI)
         run: |
           set -e
-
-          # PATH seguro (CRÍTICO)
-          export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH
-
+          
+          # Garante que os diretórios de saída existam para evitar erro de mktemp
+          mkdir -p out/target/product/g0q/
+          
+          # Reforça o PATH incluindo o Proton Clang e ferramentas do sistema
+          export PATH="${GITHUB_WORKSPACE}/toolchain/proton-clang/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+          
           echo "Verificando ferramentas essenciais:"
           which nproc
           which sed
-          which tr
-          which readlink
-
+          which clang
+          
           chmod +x *.sh || true
           chmod +x kernel_platform/build/*.sh || true
 
           echo ">>> Iniciando build do kernel"
-          ./build_kernel_GKI.sh
+          # Passamos a variável explicitamente aqui também por segurança
+          HERMETIC_TOOLCHAIN=0 ./build_kernel_GKI.sh
 
           echo ">>> Localizando diretório de saída"
           BUILD_OUT_DIR=$(find out -type d -name "*waipio*gki*" | head -n 1)
@@ -100,15 +90,10 @@ jobs:
           echo "BUILD_OUT_DIR=$BUILD_OUT_DIR" >> $GITHUB_ENV
           echo "Diretório de saída: $BUILD_OUT_DIR"
 
-      # ------------------------------------------------------------
-      # Empacotar Artefatos
-      # ------------------------------------------------------------
       - name: Empacotar vendor_boot e módulos
         run: |
           set -e
-
           mkdir -p output/modules
-
           echo "Procurando vendor_boot.img..."
           VENDOR_BOOT_IMG=$(find "$BUILD_OUT_DIR" -name "vendor_boot.img" | head -n 1)
 
@@ -119,15 +104,11 @@ jobs:
           fi
 
           cp "$VENDOR_BOOT_IMG" output/vendor_boot.img
-
           find "$BUILD_OUT_DIR" -name "*.ko" -exec cp {} output/modules/ \; || true
 
           cd output
           zip -r ../waipio_vendor_boot_artifacts.zip .
 
-      # ------------------------------------------------------------
-      # Upload
-      # ------------------------------------------------------------
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
