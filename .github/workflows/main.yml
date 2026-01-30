@@ -1,4 +1,4 @@
-name: Kernel Build (Waipio - Vendor Boot)
+name: Kernel Build (Waipio - Vendor Boot | Proton Clang)
 
 on:
   push:
@@ -8,98 +8,118 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    
+    runs-on: ubuntu-24.04
+
+    env:
+      ARCH: arm64
+      SUBARCH: arm64
+      CC: clang
+      CROSS_COMPILE: aarch64-linux-gnu-
+      CROSS_COMPILE_ARM32: arm-linux-gnueabi-
+      LLVM: 1
+      LLVM_IAS: 1
+
     steps:
+      # ------------------------------------------------------------
+      # Checkout
+      # ------------------------------------------------------------
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # ------------------------------------------------------------
+      # Dependências
+      # ------------------------------------------------------------
       - name: Instalar Dependências
         run: |
           sudo apt-get update
-          sudo apt-get install -y git make gcc g++ python3 bc flex bison libssl-dev libelf-dev cpio unzip wget xz-utils zip
+          sudo apt-get install -y \
+            git make gcc g++ python3 bc flex bison \
+            libssl-dev libelf-dev cpio unzip wget xz-utils zip \
+            rsync file build-essential curl
 
-      - name: Configurar Toolchain (ZyC Clang)
-        id: toolchain
+      # ------------------------------------------------------------
+      # Toolchain – Proton Clang
+      # ------------------------------------------------------------
+      - name: Configurar Toolchain (Proton Clang)
         run: |
-          # 1. Criar diretório da toolchain
-          TOOLCHAIN_DIR="${{ github.workspace }}/toolchain"
-          mkdir -p $TOOLCHAIN_DIR
-          
-          # 2. Baixar ZyC Clang (Versão estável e compatível com kernels modernos)
-          # Esta toolchain já inclui Clang, LLD e binutils necessários.
-          wget -q https://github.com/ZyCromerZ/Clang/releases/download/19.0.0git-20240212/ZyC-Clang-19.0.0git-20240212.tar.gz -O clang.tar.gz
-          tar -xf clang.tar.gz -C $TOOLCHAIN_DIR
-          
-          # 3. Exportar Variáveis de Ambiente para o GitHub Actions
-          echo "$TOOLCHAIN_DIR/bin" >> $GITHUB_PATH
-          
-          # Configurações de compilação
-          {
-            echo "ARCH=arm64"
-            echo "SUBARCH=arm64"
-            echo "KBUILD_COMPILER_STRING=$(clang --version | head -n 1)"
-            echo "CLANG_PATH=$TOOLCHAIN_DIR/bin"
-            echo "CROSS_COMPILE=aarch64-linux-gnu-"
-            echo "CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
-            echo "CC=clang"
-            echo "AR=llvm-ar"
-            echo "NM=llvm-nm"
-            echo "OBJCOPY=llvm-objcopy"
-            echo "OBJDUMP=llvm-objdump"
-            echo "STRIP=llvm-strip"
-          } >> $GITHUB_ENV
-          
-          echo "Toolchain configurada com sucesso."
-          $TOOLCHAIN_DIR/bin/clang --version
+          set -e
 
-      - name: Executar Build do Kernel (vendor_boot)
+          TOOLCHAIN_DIR="${GITHUB_WORKSPACE}/toolchain"
+          mkdir -p "$TOOLCHAIN_DIR"
+          cd "$TOOLCHAIN_DIR"
+
+          echo "Baixando Proton Clang..."
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git
+
+          echo "${TOOLCHAIN_DIR}/proton-clang/bin" >> $GITHUB_PATH
+
+          echo "AR=llvm-ar" >> $GITHUB_ENV
+          echo "NM=llvm-nm" >> $GITHUB_ENV
+          echo "OBJCOPY=llvm-objcopy" >> $GITHUB_ENV
+          echo "OBJDUMP=llvm-objdump" >> $GITHUB_ENV
+          echo "STRIP=llvm-strip" >> $GITHUB_ENV
+          echo "LD=ld.lld" >> $GITHUB_ENV
+          echo "KBUILD_COMPILER_STRING=$(clang --version | head -n 1)" >> $GITHUB_ENV
+
+          clang --version
+
+      # ------------------------------------------------------------
+      # Build Kernel + vendor_boot
+      # ------------------------------------------------------------
+      - name: Build Kernel (Waipio GKI + vendor_boot)
         run: |
-          # Dar permissão de execução aos scripts
-          chmod +x *.sh
-          chmod +x kernel_platform/build/*.sh
-          
-          # Executar o script de build principal
+          set -e
+
+          chmod +x *.sh || true
+          chmod +x kernel_platform/build/*.sh || true
+
+          echo ">>> Iniciando build do kernel"
           ./build_kernel_GKI.sh
-          
-          # Localizar o diretório de saída (ajustado conforme a estrutura observada)
-          # O script gera os arquivos em: out/msm-waipio-gki
+
+          echo ">>> Procurando diretório de saída"
           BUILD_OUT_DIR=$(find . -type d -name "msm-waipio-gki" | head -n 1)
-          
+
           if [ -z "$BUILD_OUT_DIR" ]; then
-            echo "Erro: Diretório de saída msm-waipio-gki não encontrado."
-            # Listar diretórios para debug se falhar
+            echo "ERRO: diretório msm-waipio-gki não encontrado"
             find . -maxdepth 4 -type d
             exit 1
           fi
-          
-          echo "BUILD_OUT_DIR=$BUILD_OUT_DIR" >> $GITHUB_ENV
 
-      - name: Empacotar Artefatos
+          echo "BUILD_OUT_DIR=$BUILD_OUT_DIR" >> $GITHUB_ENV
+          echo "Diretório de saída: $BUILD_OUT_DIR"
+
+      # ------------------------------------------------------------
+      # Empacotar Artefatos
+      # ------------------------------------------------------------
+      - name: Empacotar vendor_boot e módulos
         run: |
-          # Encontrar a imagem vendor_boot.img
-          VENDOR_BOOT_IMG=$(find ${{ env.BUILD_OUT_DIR }} -name "vendor_boot.img" | head -n 1)
-          
+          set -e
+
+          mkdir -p output/modules
+
+          VENDOR_BOOT_IMG=$(find "$BUILD_OUT_DIR" -name "vendor_boot.img" | head -n 1)
+
           if [ -z "$VENDOR_BOOT_IMG" ]; then
-            echo "Erro: vendor_boot.img não encontrado."
+            echo "ERRO: vendor_boot.img não encontrado"
+            find "$BUILD_OUT_DIR" -type f | head -n 200
             exit 1
           fi
-          
-          # Preparar pasta de módulos
-          mkdir -p output/modules
-          cp $VENDOR_BOOT_IMG output/waipio_vendor_boot.img
-          
-          # Tentar copiar módulos (.ko) se existirem
-          find ${{ env.BUILD_OUT_DIR }} -name "*.ko" -exec cp {} output/modules/ \;
-          
-          # Criar o arquivo final
-          cd output && zip -r ../waipio_kernel_artifacts.zip .
 
+          cp "$VENDOR_BOOT_IMG" output/vendor_boot.img
+
+          find "$BUILD_OUT_DIR" -name "*.ko" -exec cp {} output/modules/ \; || true
+
+          cd output
+          zip -r ../waipio_vendor_boot_artifacts.zip .
+
+      # ------------------------------------------------------------
+      # Upload
+      # ------------------------------------------------------------
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: waipio-vendor-boot-build
-          path: waipio_kernel_artifacts.zip
+          name: waipio-vendor-boot-proton
+          path: waipio_vendor_boot_artifacts.zip
           retention-days: 7
