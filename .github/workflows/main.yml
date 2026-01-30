@@ -1,10 +1,9 @@
-name: Build S22 Kernel (kernel_platform) - UFDT Prebuilt Fix (FINAL)
+name: Build S22 Kernel (kernel_platform) - UFDT Final Fix
 
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [ main ]
     paths:
       - 'kernel_platform/**'
       - 'msm-kernel/**'
@@ -15,12 +14,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v4
       with:
         submodules: true
 
-    - name: Setup Swap Space (8GB)
+    - name: Setup Swap (8GB)
       run: |
         sudo swapoff /swapfile 2>/dev/null || true
         sudo dd if=/dev/zero of=/swapfile bs=1M count=8192
@@ -29,7 +27,7 @@ jobs:
         sudo swapon /swapfile
         free -h
 
-    - name: Install Build Dependencies
+    - name: Install deps
       run: |
         sudo apt-get update
         sudo apt-get install -y \
@@ -37,77 +35,37 @@ jobs:
           libncurses5-dev libelf-dev binutils-dev \
           qemu-user-static rsync wget tar git
 
-    - name: Download Clang r416183b (Android 12L)
-      run: |
-        TOOLCHAIN_DIR="kernel_platform/prebuilts-master/clang/host/linux-x86"
-        CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12L-gsi/clang-r416183b.tar.gz"
-
-        mkdir -p $TOOLCHAIN_DIR
-        cd $TOOLCHAIN_DIR
-        wget $CLANG_URL -O clang.tar.gz
-        mkdir clang-r416183b
-        tar -C clang-r416183b -xzf clang.tar.gz
-        rm clang.tar.gz
-        cd -
-
-    # ✅ FIX REAL E CORRETO
-    - name: Install ufdt_apply_overlay (AOSP prebuilt)
+    - name: Install ufdt_apply_overlay (AOSP prebuilts)
       run: |
         set -e
-
-        echo "📥 Clonando prebuilts/misc do AOSP"
         git clone https://android.googlesource.com/platform/prebuilts/misc
-
-        UFDT_BIN=prebuilts/misc/linux-x86/bin/ufdt_apply_overlay
-
-        if [ ! -f "$UFDT_BIN" ]; then
-          echo "❌ ufdt_apply_overlay não encontrado em $UFDT_BIN"
-          ls -R prebuilts/misc/linux-x86/bin || true
+        UFDT_BIN=$(find misc -type f -name ufdt_apply_overlay | head -n 1)
+        if [ -z "$UFDT_BIN" ]; then
+          echo "ufdt_apply_overlay não encontrado"
           exit 1
         fi
-
         sudo cp "$UFDT_BIN" /usr/local/bin/
         sudo chmod +x /usr/local/bin/ufdt_apply_overlay
-
         which ufdt_apply_overlay
-        ufdt_apply_overlay --help || true
 
-    - name: Prepare Build Environment
+    - name: Prepare build
       run: |
         rm -rf kernel_platform/build/build-tools/path/linux-x86
-
         cat <<'EOF' > my_build.sh
         #!/bin/bash
         set -e
-
         export MAKEFLAGS="-j4"
         export HERMETIC_TOOLCHAIN=0
-
-        export CLANG_PREBUILT_BIN=$(pwd)/kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin
-        export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$CLANG_PREBUILT_BIN
-
-        export BISON=/usr/bin/bison
-        export FLEX=/usr/bin/flex
-        export M4=/usr/bin/m4
-
+        export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH
         bash build_kernel_GKI.sh
         EOF
-
         chmod +x my_build.sh
 
-    - name: Build Kernel
-      run: |
-        ./my_build.sh
+    - name: Build kernel
+      run: ./my_build.sh
 
-    - name: Upload Artifacts
+    - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: s22-kernel-artifacts
-        path: |
-          out/**/dist/Image
-          out/**/dist/Image.lz4
-          out/**/dist/vmlinux
-          out/**/dist/modules.zip
-          out/**/dist/*.dtbo
-        if-no-files-found: error
-        retention-days: 7
+        name: s22-kernel
+        path: out/**/dist/*
