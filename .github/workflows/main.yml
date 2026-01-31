@@ -33,7 +33,7 @@ jobs:
           bc bison build-essential flex libssl-dev \
           libncurses5-dev libelf-dev binutils-dev \
           qemu-user-static rsync wget tar \
-          clang lld llvm device-tree-compiler
+          clang lld llvm device-tree-compiler python3
 
         echo "🔎 Verificando LLVM"
         which clang
@@ -77,6 +77,15 @@ jobs:
 
         which ufdt_apply_overlay
         ufdt_apply_overlay --help || true
+
+    # ===============================
+    # MKBOOTIMG / MKDTBOIMGPY
+    # ===============================
+    - name: Add mkbootimg tools to PATH
+      run: |
+        echo "✅ Adicionando kernel_platform/tools/mkbootimg ao PATH"
+        export PATH=$(pwd)/kernel_platform/tools/mkbootimg:$PATH
+        which mkdtboimg.py || echo "⚠️ mkdtboimg.py não encontrado (vai falhar se o build precisar)"
 
     # ===============================
     # CLANG AOSP (r416183b)
@@ -123,8 +132,8 @@ jobs:
         export LLVM_IAS=1
         export LD=ld.lld
 
-        # PATH seguro
-        export PATH=\$CLANG_PREBUILT_BIN:/usr/bin:/bin:/usr/sbin:/sbin:\$PATH
+        # PATH seguro + mkbootimg tools
+        export PATH=\$CLANG_PREBUILT_BIN:$(pwd)/kernel_platform/tools/mkbootimg:/usr/bin:/bin:/usr/sbin:/sbin:\$PATH
 
         # Ferramentas explícitas
         export BISON=/usr/bin/bison
