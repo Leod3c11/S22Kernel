@@ -13,132 +13,137 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    
     steps:
-    # ===============================
-    # CHECKOUT
-    # ===============================
-    - name: Checkout Repository
-      uses: actions/checkout@v4
-      with:
-        submodules: true
+      # ===============================
+      # CHECKOUT
+      # ===============================
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
 
-    # ===============================
-    # DEPENDÊNCIAS DO SISTEMA
-    # ===============================
-    - name: Install Build Dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          bc bison build-essential flex libssl-dev \
-          libncurses5-dev libelf-dev binutils-dev \
-          qemu-user-static rsync wget tar \
-          clang lld llvm device-tree-compiler
+      # ===============================
+      # DEPENDÊNCIAS DO SISTEMA
+      # ===============================
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential flex libssl-dev \
+            libncurses5-dev libelf-dev binutils-dev \
+            qemu-user-static rsync wget tar \
+            clang lld llvm device-tree-compiler python3 python3-pip
+          echo "🔎 Verificando LLVM"
+          which clang
+          which ld.lld
+          clang --version
+          ld.lld --version
 
-        echo "🔎 Verificando LLVM"
-        which clang
-        which ld.lld
-        clang --version
-        ld.lld --version
+      # ===============================
+      # SWAP (CRÍTICO PARA LTO)
+      # ===============================
+      - name: Setup Swap Space (OOM fix)
+        run: |
+          echo "🧠 Criando swap de 8GB"
+          sudo swapoff -a || true
+          sudo dd if=/dev/zero of=/swapfile bs=1M count=8192
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
 
-    # ===============================
-    # SWAP (CRÍTICO PARA LTO)
-    # ===============================
-    - name: Setup Swap Space (OOM fix)
-      run: |
-        echo "🧠 Criando swap de 8GB"
-        sudo swapoff -a || true
-        sudo dd if=/dev/zero of=/swapfile bs=1M count=8192
-        sudo chmod 600 /swapfile
-        sudo mkswap /swapfile
-        sudo swapon /swapfile
-        free -h
+      # ===============================
+      # UFDT (DTBO OVERLAY TOOL)
+      # ===============================
+      - name: Install ufdt_apply_overlay (AOSP prebuilt)
+        run: |
+          set -e
+          echo "📥 Clonando prebuilts do AOSP"
+          git clone https://android.googlesource.com/platform/prebuilts/misc prebuilts-misc
+          UFDT_BIN=$(find prebuilts-misc -type f -name ufdt_apply_overlay | head -n 1)
+          if [ -z "$UFDT_BIN" ]; then
+            echo "❌ ufdt_apply_overlay não encontrado nos prebuilts"
+            exit 1
+          fi
+          echo "✅ ufdt_apply_overlay encontrado em: $UFDT_BIN"
+          sudo cp "$UFDT_BIN" /usr/local/bin/ufdt_apply_overlay
+          sudo chmod +x /usr/local/bin/ufdt_apply_overlay
+          which ufdt_apply_overlay
+          ufdt_apply_overlay --help || true
 
-    # ===============================
-    # UFDT (DTBO OVERLAY TOOL)
-    # ===============================
-    - name: Install ufdt_apply_overlay (AOSP prebuilt)
-      run: |
-        set -e
-        git clone https://android.googlesource.com/platform/prebuilts/misc prebuilts-misc
-        UFDT_BIN=$(find prebuilts-misc -type f -name ufdt_apply_overlay | head -n 1)
-        if [ -z "$UFDT_BIN" ]; then
-          echo "❌ ufdt_apply_overlay não encontrado"
-          exit 1
-        fi
-        sudo cp "$UFDT_BIN" /usr/local/bin/ufdt_apply_overlay
-        sudo chmod +x /usr/local/bin/ufdt_apply_overlay
-        which ufdt_apply_overlay
-        ufdt_apply_overlay --help || true
+      # ===============================
+      # CLANG AOSP (r416183b)
+      # ===============================
+      - name: Download and Configure Clang Toolchain (r416183b)
+        run: |
+          TOOLCHAIN_DIR="kernel_platform/prebuilts-master/clang/host/linux-x86"
+          CLANG_TAR="clang-r416183b.tar.gz"
+          CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12L-gsi/clang-r416183b.tar.gz"
+          echo "📥 Downloading Clang from: $CLANG_URL"
+          mkdir -p $TOOLCHAIN_DIR
+          cd $TOOLCHAIN_DIR
+          wget $CLANG_URL -O $CLANG_TAR
+          mkdir clang-r416183b
+          tar -C clang-r416183b -xzf $CLANG_TAR
+          rm $CLANG_TAR
+          cd -
 
-    # ===============================
-    # CLANG AOSP (r416183b)
-    # ===============================
-    - name: Download and Configure Clang Toolchain (r416183b)
-      run: |
-        TOOLCHAIN_DIR="kernel_platform/prebuilts-master/clang/host/linux-x86"
-        CLANG_TAR="clang-r416183b.tar.gz"
-        CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12L-gsi/clang-r416183b.tar.gz"
-        
-        echo "📥 Downloading Clang from: $CLANG_URL"
-        mkdir -p $TOOLCHAIN_DIR
-        cd $TOOLCHAIN_DIR
-        wget $CLANG_URL -O $CLANG_TAR
-        mkdir clang-r416183b
-        tar -C clang-r416183b -xzf $CLANG_TAR
-        rm $CLANG_TAR
-        cd -
+      # ===============================
+      # PREPARAÇÃO DO AMBIENTE
+      # ===============================
+      - name: Prepare Environment and Fix Build Paths
+        run: |
+          rm -rf kernel_platform/build/build-tools/path/linux-x86
+          cat <<EOF > my_build.sh
+          #!/bin/bash
+          set -e
+          export MAKEFLAGS="-j4"
+          export HERMETIC_TOOLCHAIN=0
+          export CLANG_PREBUILT_BIN=kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin
+          export LLVM=1
+          export LLVM_IAS=1
+          export LD=ld.lld
+          export PATH=\$CLANG_PREBUILT_BIN:/usr/bin:/bin:/usr/sbin:/sbin:\$PATH
+          export BISON=/usr/bin/bison
+          export FLEX=/usr/bin/flex
+          export M4=/usr/bin/m4
 
-    # ===============================
-    # PREPARAÇÃO DO AMBIENTE
-    # ===============================
-    - name: Prepare Environment and Build Script
-      run: |
-        rm -rf kernel_platform/build/build-tools/path/linux-x86
-        cat <<EOF > my_build.sh
-        #!/bin/bash
-        set -e
+          # Corrige o PATH do mkdtboimg.py
+          export PATH=$PWD/kernel_platform/tools/mkbootimg:\$PATH
 
-        export MAKEFLAGS="-j4"
-        export HERMETIC_TOOLCHAIN=0
-        export CLANG_PREBUILT_BIN=kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin
-        export LLVM=1
-        export LLVM_IAS=1
-        export LD=ld.lld
-        export PATH=\$CLANG_PREBUILT_BIN:/usr/bin:/bin:/usr/sbin:/sbin:\$PATH
-        export BISON=/usr/bin/bison
-        export FLEX=/usr/bin/flex
-        export M4=/usr/bin/m4
+          bash build_kernel_GKI.sh
+          EOF
+          chmod +x my_build.sh
 
-        bash build_kernel_GKI.sh || true   # <-- continua mesmo que falhe
-        EOF
-        chmod +x my_build.sh
+      # ===============================
+      # BUILD (CONTINUA MESMO SE FALHAR)
+      # ===============================
+      - name: Build Kernel
+        continue-on-error: true
+        run: |
+          ./my_build.sh
 
-    # ===============================
-    # BUILD
-    # ===============================
-    - name: Build Kernel
-      run: ./my_build.sh
+      # ===============================
+      # LISTAR ARTEFATOS
+      # ===============================
+      - name: List Build Artifacts
+        run: |
+          echo "📦 Listando arquivos compilados:"
+          find out/msm-waipio-waipio-gki/dist/ -type f
+          find out/msm-waipio-waipio-gki/staging/lib/modules/ -type f -name '*.ko'
 
-    # ===============================
-    # UPLOAD DE ARTEFATOS (SEMPRE)
-    # ===============================
-    - name: Upload Kernel Artifacts
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: s22-kernel-artifacts
-        path: |
-          out/msm-waipio-waipio-gki/dist/Image.lz4
-          out/msm-waipio-waipio-gki/dist/Image
-          out/msm-waipio-waipio-gki/dist/System.map
-          out/msm-waipio-waipio-gki/dist/vmlinux
-          out/msm-waipio-waipio-gki/dist/vmlinux.symvers
-          out/msm-waipio-waipio-gki/dist/modules.builtin
-          out/msm-waipio-waipio-gki/dist/modules.builtin.modinfo
-          out/msm-waipio-waipio-gki/dist/vendor_dlkm.img
-          out/msm-waipio-waipio-gki/dist/dtbo.img
-          out/msm-waipio-waipio-gki/dist/kernel-headers.tar.gz
-          out/msm-waipio-waipio-gki/dist/kernel-uapi-headers.tar.gz
-        if-no-files-found: warn
-        retention-days: 7
+      # ===============================
+      # UPLOAD DOS ARTEFATOS
+      # ===============================
+      - name: Upload Kernel Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: s22-kernel-artifacts
+          path: |
+            out/msm-waipio-waipio-gki/dist/Image.lz4
+            out/msm-waipio-waipio-gki/dist/Image
+            out/msm-waipio-waipio-gki/dist/modules.zip
+            out/msm-waipio-waipio-gki/dist/vmlinux
+            out/msm-waipio-waipio-gki/dist/dtbo.img
+          if-no-files-found: warn
+          retention-days: 7
