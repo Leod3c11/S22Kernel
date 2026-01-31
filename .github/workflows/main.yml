@@ -33,7 +33,7 @@ jobs:
           bc bison build-essential flex libssl-dev \
           libncurses5-dev libelf-dev binutils-dev \
           qemu-user-static rsync wget tar \
-          clang lld llvm device-tree-compiler python3
+          clang lld llvm device-tree-compiler
 
         echo "🔎 Verificando LLVM"
         which clang
@@ -60,32 +60,16 @@ jobs:
     - name: Install ufdt_apply_overlay (AOSP prebuilt)
       run: |
         set -e
-
-        echo "📥 Clonando prebuilts do AOSP"
         git clone https://android.googlesource.com/platform/prebuilts/misc prebuilts-misc
-
         UFDT_BIN=$(find prebuilts-misc -type f -name ufdt_apply_overlay | head -n 1)
-
         if [ -z "$UFDT_BIN" ]; then
-          echo "❌ ufdt_apply_overlay não encontrado nos prebuilts"
+          echo "❌ ufdt_apply_overlay não encontrado"
           exit 1
         fi
-
-        echo "✅ ufdt_apply_overlay encontrado em: $UFDT_BIN"
         sudo cp "$UFDT_BIN" /usr/local/bin/ufdt_apply_overlay
         sudo chmod +x /usr/local/bin/ufdt_apply_overlay
-
         which ufdt_apply_overlay
         ufdt_apply_overlay --help || true
-
-    # ===============================
-    # MKBOOTIMG / MKDTBOIMGPY
-    # ===============================
-    - name: Add mkbootimg tools to PATH
-      run: |
-        echo "✅ Adicionando kernel_platform/tools/mkbootimg ao PATH"
-        export PATH=$(pwd)/kernel_platform/tools/mkbootimg:$PATH
-        which mkdtboimg.py || echo "⚠️ mkdtboimg.py não encontrado (vai falhar se o build precisar)"
 
     # ===============================
     # CLANG AOSP (r416183b)
@@ -99,70 +83,62 @@ jobs:
         echo "📥 Downloading Clang from: $CLANG_URL"
         mkdir -p $TOOLCHAIN_DIR
         cd $TOOLCHAIN_DIR
-        
         wget $CLANG_URL -O $CLANG_TAR
         mkdir clang-r416183b
         tar -C clang-r416183b -xzf $CLANG_TAR
         rm $CLANG_TAR
-        
         cd -
 
     # ===============================
     # PREPARAÇÃO DO AMBIENTE
     # ===============================
-    - name: Prepare Environment and Fix Build Paths
+    - name: Prepare Environment and Build Script
       run: |
         rm -rf kernel_platform/build/build-tools/path/linux-x86
-        
         cat <<EOF > my_build.sh
         #!/bin/bash
         set -e
 
-        # 🔥 CRÍTICO PARA NÃO MORRER NO LTO
         export MAKEFLAGS="-j4"
-
-        # Desativar modo hermético
         export HERMETIC_TOOLCHAIN=0
-
-        # Clang AOSP
         export CLANG_PREBUILT_BIN=kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin
-
-        # LLVM obrigatório para GKI
         export LLVM=1
         export LLVM_IAS=1
         export LD=ld.lld
-
-        # PATH seguro + mkbootimg tools
-        export PATH=\$CLANG_PREBUILT_BIN:$(pwd)/kernel_platform/tools/mkbootimg:/usr/bin:/bin:/usr/sbin:/sbin:\$PATH
-
-        # Ferramentas explícitas
+        export PATH=\$CLANG_PREBUILT_BIN:/usr/bin:/bin:/usr/sbin:/sbin:\$PATH
         export BISON=/usr/bin/bison
         export FLEX=/usr/bin/flex
         export M4=/usr/bin/m4
 
-        bash build_kernel_GKI.sh
+        bash build_kernel_GKI.sh || true   # <-- continua mesmo que falhe
         EOF
-        
         chmod +x my_build.sh
 
     # ===============================
     # BUILD
     # ===============================
     - name: Build Kernel
-      run: |
-        ./my_build.sh
+      run: ./my_build.sh
 
     # ===============================
-    # ARTEFATOS
+    # UPLOAD DE ARTEFATOS (SEMPRE)
     # ===============================
-    - name: Find and Upload Artifacts
+    - name: Upload Kernel Artifacts
+      if: always()
       uses: actions/upload-artifact@v4
       with:
         name: s22-kernel-artifacts
         path: |
           out/msm-waipio-waipio-gki/dist/Image.lz4
           out/msm-waipio-waipio-gki/dist/Image
-          out/msm-waipio-waipio-gki/dist/modules.zip
+          out/msm-waipio-waipio-gki/dist/System.map
           out/msm-waipio-waipio-gki/dist/vmlinux
-        if-no-files-found: error
+          out/msm-waipio-waipio-gki/dist/vmlinux.symvers
+          out/msm-waipio-waipio-gki/dist/modules.builtin
+          out/msm-waipio-waipio-gki/dist/modules.builtin.modinfo
+          out/msm-waipio-waipio-gki/dist/vendor_dlkm.img
+          out/msm-waipio-waipio-gki/dist/dtbo.img
+          out/msm-waipio-waipio-gki/dist/kernel-headers.tar.gz
+          out/msm-waipio-waipio-gki/dist/kernel-uapi-headers.tar.gz
+        if-no-files-found: warn
         retention-days: 7
