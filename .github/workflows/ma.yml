@@ -3,7 +3,12 @@ name: Build S22 Kernel (Image + DTBO + vendor_dlkm)
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches:
+      - main
+    paths:
+      - 'kernel_platform/**'
+      - 'msm-kernel/**'
+      - 'build_kernel_GKI.sh'
 
 jobs:
   build:
@@ -20,7 +25,7 @@ jobs:
         submodules: true
 
     # ===============================
-    # DEPENDÊNCIAS
+    # DEPENDÊNCIAS DO SISTEMA
     # ===============================
     - name: Install Build Dependencies
       run: |
@@ -28,33 +33,30 @@ jobs:
         sudo apt-get install -y \
           bc bison build-essential flex libssl-dev \
           libncurses5-dev libelf-dev binutils-dev \
-          rsync wget tar cpio \
-          clang lld llvm device-tree-compiler
+          qemu-user-static rsync wget tar \
+          clang lld llvm device-tree-compiler e2fsprogs
+
+        clang --version
+        ld.lld --version
 
     # ===============================
-    # SWAP (ALTERADO APENAS AQUI)
+    # SWAP (ALTERADO)
     # ===============================
-    - name: Setup Swap
+    - name: Setup Swap Space
       run: |
+        echo "🧠 Criando swap de 16GB"
         sudo swapoff -a || true
-
-        echo "🧠 Criando swap grande (16GB)"
-        sudo fallocate -l 16G /swapfile
+        sudo dd if=/dev/zero of=/swapfile bs=1M count=16384
         sudo chmod 600 /swapfile
         sudo mkswap /swapfile
         sudo swapon /swapfile
-
-        echo "⚙️ Ajustando swappiness"
-        sudo sysctl vm.swappiness=90
-
-        echo "📊 Memória após swap:"
         free -h
         swapon --show
 
     # ===============================
-    # CACHE CLANG
+    # CACHE DO CLANG AOSP
     # ===============================
-    - name: Cache Clang
+    - name: Cache Clang Toolchain
       uses: actions/cache@v4
       with:
         path: kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b
@@ -63,115 +65,145 @@ jobs:
     # ===============================
     # CLANG AOSP
     # ===============================
-    - name: Setup Clang
+    - name: Download and Configure Clang Toolchain
       run: |
-        TOOLCHAIN_DIR=kernel_platform/prebuilts-master/clang/host/linux-x86
-        CLANG_URL=https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12L-gsi/clang-r416183b.tar.gz
+        TOOLCHAIN_DIR="kernel_platform/prebuilts-master/clang/host/linux-x86"
+        CLANG_TAR="clang-r416183b.tar.gz"
+        CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12L-gsi/clang-r416183b.tar.gz"
 
         mkdir -p $TOOLCHAIN_DIR
         cd $TOOLCHAIN_DIR
 
         if [ ! -d clang-r416183b ]; then
-          wget $CLANG_URL -O clang.tar.gz
+          wget $CLANG_URL -O $CLANG_TAR
           mkdir clang-r416183b
-          tar -C clang-r416183b -xzf clang.tar.gz
-          rm clang.tar.gz
+          tar -C clang-r416183b -xzf $CLANG_TAR
+          rm $CLANG_TAR
         fi
 
+        cd -
+
     # ===============================
-    # PREPARE BUILD SCRIPT
+    # PREPARAR AMBIENTE + TARGET CONFIG
     # ===============================
-    - name: Prepare Build Script
+    - name: Prepare Build Environment
       run: |
-        cat <<'EOF' > build.sh
+        rm -rf kernel_platform/build/build-tools/path/linux-x86
+
+        cat <<'EOF' > my_build.sh
         #!/bin/bash
         set -e
 
-        ################ TARGET ################
+        #################################
+        # TARGET CONFIG
+        #################################
         export BUILD_TARGET=g0q_gbl_openx
-        export MODEL=${BUILD_TARGET%%_*}
-        export REGION=$(echo $BUILD_TARGET | cut -d'_' -f2)
-        export CARRIER=$(echo $BUILD_TARGET | cut -d'_' -f3)
+
+        export MODEL=$(echo ${BUILD_TARGET} | cut -d'_' -f1)
+        export PROJECT_NAME=${MODEL}
+        export REGION=$(echo ${BUILD_TARGET} | cut -d'_' -f2)
+        export CARRIER=$(echo ${BUILD_TARGET} | cut -d'_' -f3)
         export TARGET_BUILD_VARIANT=user
 
-        ################ CHIPSET ################
+        #################################
+        # CHIPSET
+        #################################
         export CHIPSET_NAME=waipio
-        export TARGET_PRODUCT=gki
-        export TARGET_BOARD_PLATFORM=gki
         export ANDROID_BUILD_TOP=$(pwd)
 
-        export ANDROID_PRODUCT_OUT=$ANDROID_BUILD_TOP/out/target/product/$MODEL
-        export OUT_DIR=$ANDROID_BUILD_TOP/out/msm-$CHIPSET_NAME-$CHIPSET_NAME-$TARGET_PRODUCT
+        export TARGET_PRODUCT=gki
+        export TARGET_BOARD_PLATFORM=gki
 
-        ################ TOOLCHAIN ################
+        export ANDROID_PRODUCT_OUT=${ANDROID_BUILD_TOP}/out/target/product/${MODEL}
+        export OUT_DIR=${ANDROID_BUILD_TOP}/out/msm-${CHIPSET_NAME}-${CHIPSET_NAME}-${TARGET_PRODUCT}
+
+        #################################
+        # TOOLCHAIN
+        #################################
         export MAKEFLAGS="-j4"
         export HERMETIC_TOOLCHAIN=0
 
-        export CLANG_PREBUILT_BIN=$ANDROID_BUILD_TOP/kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin
-        export PATH=$CLANG_PREBUILT_BIN:$PATH
+        export CLANG_PREBUILT_BIN=kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin
 
         export LLVM=1
         export LLVM_IAS=1
         export LD=ld.lld
 
-        ################ BUILD ################
+        export PATH=$CLANG_PREBUILT_BIN:/usr/bin:/bin:/usr/sbin:/sbin:$PATH
+
+        export BISON=/usr/bin/bison
+        export FLEX=/usr/bin/flex
+        export M4=/usr/bin/m4
+
+        #################################
+        # BUILD
+        #################################
         bash build_kernel_GKI.sh
         EOF
 
-        chmod +x build.sh
+        chmod +x my_build.sh
 
     # ===============================
-    # BUILD KERNEL
+    # BUILD DO KERNEL
     # ===============================
     - name: Build Kernel
-      run: ./build.sh || true
-
-    # ===============================
-    # COLETAR ARTEFATOS
-    # ===============================
-    - name: Collect Kernel Image + DTBO
+      continue-on-error: true
       run: |
-        mkdir -p out-final
-        find out/ -name "Image*" -exec cp {} out-final/ \;
-        find out/ -name "dtbo.img" -exec cp {} out-final/ \;
+        ./my_build.sh || echo "⚠️ Build finalizado com erros"
 
     # ===============================
-    # BUILD VENDOR_DLKM.IMG
+    # COLETAR IMAGE + DTBO
+    # ===============================
+    - name: Collect Kernel Image and DTBO
+      run: |
+        mkdir -p kernel-out
+
+        find out/ -type f \( \
+          -name "Image" \
+          -o -name "Image.gz" \
+          -o -name "Image.lz4" \
+        \) -exec cp {} kernel-out/ \;
+
+        find out/ -type f -name "dtbo.img" -exec cp {} kernel-out/ \;
+
+    # ===============================
+    # BUILD VENDOR_DLKM.IMG (NOVO)
     # ===============================
     - name: Build vendor_dlkm.img
       run: |
-        echo "📦 Preparando módulos"
-        MODDIR=vendor_dlkm_root/lib/modules
+        echo "📦 Criando vendor_dlkm.img"
+
+        ROOT=vendor_dlkm_root
+        MODDIR=$ROOT/lib/modules
+
         mkdir -p $MODDIR
 
         find out/ -name "*.ko" -exec cp {} $MODDIR \;
 
-        depmod -b vendor_dlkm_root -F out/$(find out -name System.map | head -n1) 0 || true
-
-        echo "📦 Criando vendor_dlkm.img"
-        mkdir -p out-final
         dd if=/dev/zero of=vendor_dlkm.img bs=1M count=64
         mkfs.ext4 -F vendor_dlkm.img
+
         mkdir mnt
         sudo mount vendor_dlkm.img mnt
-        sudo tar -C vendor_dlkm_root -cf - . | sudo tar -C mnt -xf -
+        sudo cp -r $ROOT/* mnt/
         sudo umount mnt
 
-        mv vendor_dlkm.img out-final/
+        mv vendor_dlkm.img kernel-out/
 
     # ===============================
     # COMPACTAR
     # ===============================
-    - name: Compress Output
+    - name: Compress Kernel Output
       run: |
-        tar -czf kernel-release.tar.gz out-final
+        tar -czf kernel-basic.tar.gz kernel-out
+        ls -lh kernel-basic.tar.gz
 
     # ===============================
     # UPLOAD
     # ===============================
-    - name: Upload Artifacts
+    - name: Upload Kernel Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: s22-kernel-release
-        path: kernel-release.tar.gz
+        name: s22-kernel-image-dtbo-vendor_dlkm
+        path: kernel-basic.tar.gz
         retention-days: 7
