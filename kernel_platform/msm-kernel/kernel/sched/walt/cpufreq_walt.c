@@ -7,6 +7,21 @@
  * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
  */
 
+/*
+ * WALT ECO MOD
+ * Global frequency cap applied at WALT->cpufreq boundary.
+ * Safe: does not modify policy, OPPs, or thermal.
+ */
+#define WALT_MAX_FREQ_PCT 70
+
+static inline unsigned int walt_cap_freq(unsigned int freq,
+                                         unsigned int policy_max)
+{
+    unsigned int cap = (policy_max * WALT_MAX_FREQ_PCT) / 100;
+    return freq > cap ? cap : freq;
+}
+
+
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/kthread.h>
