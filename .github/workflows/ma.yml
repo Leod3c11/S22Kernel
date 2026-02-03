@@ -1,4 +1,4 @@
-name: Build S22 Kernel
+name: Build S22 Kernel (Fixed)
 
 on:
   workflow_dispatch:
@@ -14,29 +14,46 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Install dependencies
+    - name: Install System Dependencies
       run: |
         sudo apt update
-        sudo apt install -y bc build-essential python3 python2 git zip unzip curl \
-            libssl-dev libncurses5-dev flex bison libelf-dev clang lld llvm
+        sudo apt install -y bc build-essential python3 git zip unzip curl \
+            libssl-dev libncurses5-dev flex bison libelf-dev clang lld llvm \
+            libarchive-tools
 
-    - name: Download and setup AOSP Clang Toolchain
+    - name: Install Python 2 (Legacy Support)
       run: |
-        # This is a placeholder. You might need to adjust the URL and version.
-        # Search for a suitable AOSP Clang toolchain for Android 12/13 GKI.
-        # Example: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/
+        # Adiciona repositório para Python 2 no Ubuntu 22.04+
+        sudo add-apt-repository ppa:deadsnakes/ppa -y
+        sudo apt update
+        sudo apt install -y python2
+        # Cria um link simbólico para scripts que esperam 'python' ou 'python2'
+        sudo ln -sf /usr/bin/python2 /usr/bin/python
+
+    - name: Setup AOSP Clang Toolchain
+      run: |
+        # Versão do Clang r416183b é comum para GKI Android 12/13
         TOOLCHAIN_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/clang-r416183b.tar.gz"
         TOOLCHAIN_DIR="kernel_platform/prebuilts/clang/host/linux-x86"
         mkdir -p ${TOOLCHAIN_DIR}
         curl -L ${TOOLCHAIN_URL} | tar -xz -C ${TOOLCHAIN_DIR}
         
-        # Verify toolchain path (adjust if necessary)
-        export PATH="$(pwd)/${TOOLCHAIN_DIR}/bin:$PATH"
-        clang --version
+        # Adiciona ao PATH para que o script de build o encontre
+        echo "$(pwd)/${TOOLCHAIN_DIR}/bin" >> $GITHUB_PATH
+
+    - name: Setup GCC (Required for some modules/headers)
+      run: |
+        # Download GCC para aarch64 se necessário (comum em kernels Samsung)
+        GCC_URL="https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/master.tar.gz"
+        GCC_DIR="kernel_platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9"
+        mkdir -p ${GCC_DIR}
+        curl -L ${GCC_URL} | tar -xz -C ${GCC_DIR}
+        echo "$(pwd)/${GCC_DIR}/bin" >> $GITHUB_PATH
 
     - name: Execute kernel build script
       run: |
         chmod +x build_kernel_GKI.sh
+        # O script build_kernel_GKI.sh espera estar na raiz e usa caminhos relativos
         ./build_kernel_GKI.sh
 
     - name: Upload kernel artifacts
@@ -47,3 +64,4 @@ jobs:
           out/target/product/g0q/out/arch/arm64/boot/Image
           out/target/product/g0q/out/drivers/*/*.ko
           out/target/product/g0q/out/arch/arm64/boot/dtbo.img
+          out/target/product/g0q/out/arch/arm64/boot/dts/vendor/qcom/*.dtb
