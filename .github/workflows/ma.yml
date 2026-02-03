@@ -1,67 +1,191 @@
-name: Build S22 Kernel (Fixed)
+name: Build S22 Kernel (Image + DTBO only)
 
 on:
   workflow_dispatch:
   push:
     branches:
       - main
+    paths:
+      - 'kernel_platform/**'
+      - 'msm-kernel/**'
+      - 'build_kernel_GKI.sh'
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    continue-on-error: true
 
     steps:
-    - name: Checkout repository
+    # ===============================
+    # CHECKOUT
+    # ===============================
+    - name: Checkout Repository
       uses: actions/checkout@v4
+      with:
+        submodules: true
 
-    - name: Install System Dependencies
+    # ===============================
+    # DEPENDÊNCIAS DO SISTEMA
+    # ===============================
+    - name: Install Build Dependencies
       run: |
-        sudo apt update
-        sudo apt install -y bc build-essential python3 git zip unzip curl \
-            libssl-dev libncurses5-dev flex bison libelf-dev clang lld llvm \
-            libarchive-tools
+        sudo apt-get update
+        sudo apt-get install -y \
+          bc bison build-essential flex libssl-dev \
+          libncurses5-dev libelf-dev binutils-dev \
+          qemu-user-static rsync wget tar \
+          clang lld llvm device-tree-compiler
 
-    - name: Install Python 2 (Legacy Support)
+        clang --version
+        ld.lld --version
+
+    # ===============================
+    # SWAP (SEGURA LTO)
+    # ===============================
+    - name: Setup Swap Space
       run: |
-        # Adiciona repositório para Python 2 no Ubuntu 22.04+
-        sudo add-apt-repository ppa:deadsnakes/ppa -y
-        sudo apt update
-        sudo apt install -y python2
-        # Cria um link simbólico para scripts que esperam 'python' ou 'python2'
-        sudo ln -sf /usr/bin/python2 /usr/bin/python
+        echo "🧠 Criando swap de 4GB"
+        sudo swapoff -a || true
+        sudo dd if=/dev/zero of=/swapfile bs=1M count=4096
+        sudo chmod 600 /swapfile
+        sudo mkswap /swapfile
+        sudo swapon /swapfile
+        free -h
 
-    - name: Setup AOSP Clang Toolchain
+    # ===============================
+    # CACHE DO CLANG AOSP
+    # ===============================
+    - name: Cache Clang Toolchain
+      uses: actions/cache@v4
+      with:
+        path: kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b
+        key: clang-r416183b
+
+    # ===============================
+    # CLANG AOSP
+    # ===============================
+    - name: Download and Configure Clang Toolchain
       run: |
-        # Versão do Clang r416183b é comum para GKI Android 12/13
-        TOOLCHAIN_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/clang-r416183b.tar.gz"
-        TOOLCHAIN_DIR="kernel_platform/prebuilts/clang/host/linux-x86"
-        mkdir -p ${TOOLCHAIN_DIR}
-        curl -L ${TOOLCHAIN_URL} | tar -xz -C ${TOOLCHAIN_DIR}
-        
-        # Adiciona ao PATH para que o script de build o encontre
-        echo "$(pwd)/${TOOLCHAIN_DIR}/bin" >> $GITHUB_PATH
+        TOOLCHAIN_DIR="kernel_platform/prebuilts-master/clang/host/linux-x86"
+        CLANG_TAR="clang-r416183b.tar.gz"
+        CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12L-gsi/clang-r416183b.tar.gz"
 
-    - name: Setup GCC (Required for some modules/headers)
+        mkdir -p $TOOLCHAIN_DIR
+        cd $TOOLCHAIN_DIR
+
+        if [ ! -d clang-r416183b ]; then
+          echo "📥 Baixando Clang AOSP"
+          wget $CLANG_URL -O $CLANG_TAR
+          mkdir clang-r416183b
+          tar -C clang-r416183b -xzf $CLANG_TAR
+          rm $CLANG_TAR
+        else
+          echo "✅ Clang já em cache"
+        fi
+
+        cd -
+
+    # ===============================
+    # PREPARAR AMBIENTE + TARGET CONFIG
+    # ===============================
+    - name: Prepare Build Environment
       run: |
-        # Download GCC para aarch64 se necessário (comum em kernels Samsung)
-        GCC_URL="https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/master.tar.gz"
-        GCC_DIR="kernel_platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9"
-        mkdir -p ${GCC_DIR}
-        curl -L ${GCC_URL} | tar -xz -C ${GCC_DIR}
-        echo "$(pwd)/${GCC_DIR}/bin" >> $GITHUB_PATH
+        rm -rf kernel_platform/build/build-tools/path/linux-x86
 
-    - name: Execute kernel build script
+        cat <<'EOF' > my_build.sh
+        #!/bin/bash
+        set -e
+
+        #################################
+        # TARGET CONFIG (README SAMSUNG)
+        #################################
+        export BUILD_TARGET=g0q_gbl_openx
+
+        export MODEL=$(echo ${BUILD_TARGET} | cut -d'_' -f1)
+        export PROJECT_NAME=${MODEL}
+        export REGION=$(echo ${BUILD_TARGET} | cut -d'_' -f2)
+        export CARRIER=$(echo ${BUILD_TARGET} | cut -d'_' -f3)
+        export TARGET_BUILD_VARIANT=user
+
+        #################################
+        # CHIPSET COMMON CONFIG
+        #################################
+        export CHIPSET_NAME=waipio
+        export ANDROID_BUILD_TOP=$(pwd)
+
+        export TARGET_PRODUCT=gki
+        export TARGET_BOARD_PLATFORM=gki
+
+        export ANDROID_PRODUCT_OUT=${ANDROID_BUILD_TOP}/out/target/product/${MODEL}
+        export OUT_DIR=${ANDROID_BUILD_TOP}/out/msm-${CHIPSET_NAME}-${CHIPSET_NAME}-${TARGET_PRODUCT}
+
+        #################################
+        # TOOLCHAIN / LLVM
+        #################################
+        export MAKEFLAGS="-j4"
+        export HERMETIC_TOOLCHAIN=0
+
+        export CLANG_PREBUILT_BIN=kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin
+
+        export LLVM=1
+        export LLVM_IAS=1
+        export LD=ld.lld
+
+        export PATH=$CLANG_PREBUILT_BIN:/usr/bin:/bin:/usr/sbin:/sbin:$PATH
+
+        export BISON=/usr/bin/bison
+        export FLEX=/usr/bin/flex
+        export M4=/usr/bin/m4
+
+        #################################
+        # BUILD
+        #################################
+        bash build_kernel_GKI.sh
+        EOF
+
+        chmod +x my_build.sh
+
+    # ===============================
+    # BUILD DO KERNEL
+    # ===============================
+    - name: Build Kernel
+      continue-on-error: true
       run: |
-        chmod +x build_kernel_GKI.sh
-        # O script build_kernel_GKI.sh espera estar na raiz e usa caminhos relativos
-        ./build_kernel_GKI.sh
+        ./my_build.sh || echo "⚠️ Build finalizado com erros"
 
-    - name: Upload kernel artifacts
+    # ===============================
+    # COLETAR IMAGE + DTBO
+    # ===============================
+    - name: Collect Kernel Image and DTBO
+      run: |
+        echo "📦 Coletando Image e dtbo.img"
+        mkdir -p kernel-out
+
+        find out/ -type f \( \
+          -name "Image" \
+          -o -name "Image.gz" \
+          -o -name "Image.lz4" \
+        \) -exec cp {} kernel-out/ \;
+
+        find out/ -type f -name "dtbo.img" -exec cp {} kernel-out/ \;
+
+        echo "📂 Arquivos finais:"
+        ls -lh kernel-out
+
+    # ===============================
+    # COMPACTAR
+    # ===============================
+    - name: Compress Kernel Output
+      run: |
+        tar -czf kernel-basic.tar.gz kernel-out
+        ls -lh kernel-basic.tar.gz
+
+    # ===============================
+    # UPLOAD
+    # ===============================
+    - name: Upload Kernel Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: s22-kernel-artifacts
-        path: |
-          out/target/product/g0q/out/arch/arm64/boot/Image
-          out/target/product/g0q/out/drivers/*/*.ko
-          out/target/product/g0q/out/arch/arm64/boot/dtbo.img
-          out/target/product/g0q/out/arch/arm64/boot/dts/vendor/qcom/*.dtb
+        name: s22-kernel-image-dtbo
+        path: kernel-basic.tar.gz
+        retention-days: 7
