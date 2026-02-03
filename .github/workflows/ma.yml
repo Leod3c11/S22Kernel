@@ -1,0 +1,49 @@
+name: Build S22 Kernel
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y bc build-essential python3 python2 git zip unzip curl \
+            libssl-dev libncurses5-dev flex bison libelf-dev clang lld llvm
+
+    - name: Download and setup AOSP Clang Toolchain
+      run: |
+        # This is a placeholder. You might need to adjust the URL and version.
+        # Search for a suitable AOSP Clang toolchain for Android 12/13 GKI.
+        # Example: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/
+        TOOLCHAIN_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/clang-r416183b.tar.gz"
+        TOOLCHAIN_DIR="kernel_platform/prebuilts/clang/host/linux-x86"
+        mkdir -p ${TOOLCHAIN_DIR}
+        curl -L ${TOOLCHAIN_URL} | tar -xz -C ${TOOLCHAIN_DIR}
+        
+        # Verify toolchain path (adjust if necessary)
+        export PATH="$(pwd)/${TOOLCHAIN_DIR}/bin:$PATH"
+        clang --version
+
+    - name: Execute kernel build script
+      run: |
+        chmod +x build_kernel_GKI.sh
+        ./build_kernel_GKI.sh
+
+    - name: Upload kernel artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: s22-kernel-artifacts
+        path: |
+          out/target/product/g0q/out/arch/arm64/boot/Image
+          out/target/product/g0q/out/drivers/*/*.ko
+          out/target/product/g0q/out/arch/arm64/boot/dtbo.img
