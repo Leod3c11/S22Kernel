@@ -23,23 +23,22 @@ jobs:
 
       - name: Install Build Dependencies
         run: |
-          /usr/bin/sudo /usr/bin/apt-get update
-          /usr/bin/sudo /usr/bin/apt-get install -y \
+          sudo apt-get update
+          sudo apt-get install -y \
             bc bison build-essential flex libssl-dev \
             libncurses5-dev libelf-dev binutils-dev \
             qemu-user-static rsync wget tar unzip lz4 \
             device-tree-compiler e2fsprogs ccache kmod \
-            coreutils python3 python3-pip bash \
-            util-linux procps  # Adicionado para swapoff, mkswap, fallocate, free, etc.
+            coreutils python3 python3-pip bash util-linux procps
 
       - name: Setup Swap Space
         run: |
-          /usr/bin/sudo /usr/bin/swapoff -a || true
-          /usr/bin/sudo /usr/bin/fallocate -l 16G /swapfile
-          /usr/bin/sudo /usr/bin/chmod 600 /swapfile
-          /usr/bin/sudo /usr/bin/mkswap /swapfile
-          /usr/bin/sudo /usr/bin/swapon /swapfile
-          /usr/bin/free -h
+          sudo swapoff -a || true
+          sudo fallocate -l 16G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
 
       - name: Cache Clang Toolchain
         uses: actions/cache@v4
@@ -50,18 +49,18 @@ jobs:
       - name: Download and Configure Clang Toolchain
         run: |
           TOOLCHAIN_DIR="kernel_platform/prebuilts-master/clang/host/linux-x86"
-          /usr/bin/mkdir -p "$TOOLCHAIN_DIR"
+          mkdir -p "$TOOLCHAIN_DIR"
           cd "$TOOLCHAIN_DIR"
           if [ ! -d clang-r416183b ]; then
-            /usr/bin/wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12L-gsi/clang-r416183b.tar.gz -O clang.tar.gz
-            /usr/bin/mkdir clang-r416183b
-            /usr/bin/tar -C clang-r416183b -xzf clang.tar.gz
-            /usr/bin/rm clang.tar.gz
+            wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12L-gsi/clang-r416183b.tar.gz -O clang.tar.gz
+            mkdir clang-r416183b
+            tar -C clang-r416183b -xzf clang.tar.gz
+            rm clang.tar.gz
           fi
           cd -
 
       - name: Prepare Build Environment and Run Build
-        shell: /usr/bin/bash {0}
+        shell: bash {0}
         run: |
           export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH}"
 
@@ -74,21 +73,21 @@ jobs:
           export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH}"
 
           export BUILD_TARGET=g0q_gbl_openx
-          export MODEL=$(echo ${BUILD_TARGET} | /usr/bin/cut -d'_' -f1)
+          export MODEL=$(echo ${BUILD_TARGET} | cut -d'_' -f1)
           export PROJECT_NAME=${MODEL}
-          export REGION=$(echo ${BUILD_TARGET} | /usr/bin/cut -d'_' -f2)
-          export CARRIER=$(echo ${BUILD_TARGET} | /usr/bin/cut -d'_' -f3)
+          export REGION=$(echo ${BUILD_TARGET} | cut -d'_' -f2)
+          export CARRIER=$(echo ${BUILD_TARGET} | cut -d'_' -f3)
           export TARGET_BUILD_VARIANT=user
 
           export CHIPSET_NAME=waipio
-          export ANDROID_BUILD_TOP=$(/usr/bin/pwd)
+          export ANDROID_BUILD_TOP=$(pwd)
           export TARGET_PRODUCT=gki
           export TARGET_BOARD_PLATFORM=gki
 
           export ANDROID_PRODUCT_OUT="\( {ANDROID_BUILD_TOP}/out/target/product/ \){MODEL}"
           export OUT_DIR="\( {ANDROID_BUILD_TOP}/out/msm- \){CHIPSET_NAME}-\( {CHIPSET_NAME}- \){TARGET_PRODUCT}"
 
-          export MAKEFLAGS="-j$(/usr/bin/nproc)"
+          export MAKEFLAGS="-j$(nproc)"
           export HERMETIC_TOOLCHAIN=0
 
           export CLANG_PREBUILT_BIN=prebuilts-master/clang/host/linux-x86/clang-r416183b/bin
@@ -97,14 +96,14 @@ jobs:
           export LLVM_IAS=1
           export LD=ld.lld
 
-          echo "pwd atual: $(/usr/bin/pwd)"
+          echo "pwd atual: $(pwd)"
           echo "ANDROID_BUILD_TOP: ${ANDROID_BUILD_TOP}"
           echo "ANDROID_PRODUCT_OUT: ${ANDROID_PRODUCT_OUT}"
           echo "OUT_DIR: ${OUT_DIR}"
           echo "PATH atual: ${PATH}"
-          /usr/bin/ls -la build/android/prepare_vendor.sh 2>&1 || echo "prepare_vendor.sh não encontrado"
+          ls -la build/android/prepare_vendor.sh 2>&1 || echo "prepare_vendor.sh não encontrado"
 
-          export ROOT_DIR=$(/usr/bin/pwd)
+          export ROOT_DIR=$(pwd)
           echo "ROOT_DIR: ${ROOT_DIR}"
 
           if [ -f build/android/prepare_vendor.sh ]; then
@@ -116,38 +115,38 @@ jobs:
           fi
           EOF
 
-          /usr/bin/chmod +x build_my.sh
+          chmod +x build_my.sh
           ./build_my.sh || { echo "Build falhou - veja logs acima"; exit 1; }
 
       - name: Collect Kernel Image, DTBO and Modules
         run: |
-          /usr/bin/mkdir -p kernel-out/Image kernel-out/dtbo kernel-out/modules
+          mkdir -p kernel-out/Image kernel-out/dtbo kernel-out/modules
 
-          /usr/bin/find ../out/ -type f \( -name "Image*" -o -name "*.gz" -o -name "*.lz4" \) -exec /usr/bin/cp {} kernel-out/Image/ \; || true
+          find ../out/ -type f \( -name "Image*" -o -name "*.gz" -o -name "*.lz4" \) -exec cp {} kernel-out/Image/ \; || true
 
-          /usr/bin/find ../out/ -type f -name "*dtb*" -o -name "dtbo.img" -exec /usr/bin/cp {} kernel-out/dtbo/ \; || true
+          find ../out/ -type f -name "*dtb*" -o -name "dtbo.img" -exec cp {} kernel-out/dtbo/ \; || true
 
-          /usr/bin/find ../out/ -name "*.ko" -exec /usr/bin/cp {} kernel-out/modules/ \; || true
+          find ../out/ -name "*.ko" -exec cp {} kernel-out/modules/ \; || true
 
           cd kernel-out/modules
-          if /usr/bin/ls *.ko >/dev/null 2>&1; then
-            /usr/bin/find . -name "*.ko" | /usr/bin/sed 's|./||' | /usr/bin/sort > modules.load
+          if ls *.ko >/dev/null 2>&1; then
+            find . -name "*.ko" | sed 's|./||' | sort > modules.load
           fi
 
       - name: Create vendor_dlkm.img
         run: |
           cd kernel-out
-          /usr/bin/mkdir -p vendor_dlkm/lib/modules
-          /usr/bin/cp modules/*.ko vendor_dlkm/lib/modules/ 2>/dev/null || true
-          /usr/bin/cp modules/modules.load vendor_dlkm/lib/modules/ 2>/dev/null || true
+          mkdir -p vendor_dlkm/lib/modules
+          cp modules/*.ko vendor_dlkm/lib/modules/ 2>/dev/null || true
+          cp modules/modules.load vendor_dlkm/lib/modules/ 2>/dev/null || true
 
-          /usr/bin/dd if=/dev/zero of=vendor_dlkm.img bs=1M count=128 status=progress
-          /usr/bin/mkfs.ext4 -F -L vendor_dlkm vendor_dlkm.img
-          /usr/bin/mkdir mnt
-          /usr/bin/sudo /usr/bin/mount vendor_dlkm.img mnt
-          /usr/bin/sudo /usr/bin/cp -r vendor_dlkm/* mnt/
-          /usr/bin/sudo /usr/bin/umount mnt
-          /usr/bin/rm -rf vendor_dlkm
+          dd if=/dev/zero of=vendor_dlkm.img bs=1M count=128 status=progress
+          mkfs.ext4 -F -L vendor_dlkm vendor_dlkm.img
+          mkdir mnt
+          sudo mount vendor_dlkm.img mnt
+          sudo cp -r vendor_dlkm/* mnt/
+          sudo umount mnt
+          rm -rf vendor_dlkm
 
       - name: Compress and Upload Artifacts
         uses: actions/upload-artifact@v4
