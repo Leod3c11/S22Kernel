@@ -29,7 +29,8 @@ jobs:
             libncurses5-dev libelf-dev binutils-dev \
             qemu-user-static rsync wget tar unzip lz4 \
             device-tree-compiler e2fsprogs ccache kmod \
-            coreutils python3 python3-pip bash
+            coreutils python3 python3-pip bash \
+            util-linux procps  # Adicionado para swapoff, mkswap, fallocate, free, etc.
 
       - name: Setup Swap Space
         run: |
@@ -118,7 +119,6 @@ jobs:
           /usr/bin/chmod +x build_my.sh
           ./build_my.sh || { echo "Build falhou - veja logs acima"; exit 1; }
 
-      # Os steps de collect, vendor_dlkm.img e upload permanecem os mesmos
       - name: Collect Kernel Image, DTBO and Modules
         run: |
           /usr/bin/mkdir -p kernel-out/Image kernel-out/dtbo kernel-out/modules
