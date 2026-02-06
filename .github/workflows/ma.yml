@@ -16,17 +16,11 @@ jobs:
     continue-on-error: false
 
     steps:
-      # ===============================
-      # CHECKOUT
-      # ===============================
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      # ===============================
-      # DEPENDÊNCIAS DO SISTEMA
-      # ===============================
       - name: Install Build Dependencies
         run: |
           sudo apt-get update
@@ -34,11 +28,9 @@ jobs:
             bc bison build-essential flex libssl-dev \
             libncurses5-dev libelf-dev binutils-dev \
             qemu-user-static rsync wget tar unzip lz4 \
-            device-tree-compiler e2fsprogs ccache kmod
+            device-tree-compiler e2fsprogs ccache kmod \
+            coreutils realpath python3 python3-pip
 
-      # ===============================
-      # SWAP (16GB para builds pesados)
-      # ===============================
       - name: Setup Swap Space
         run: |
           sudo swapoff -a || true
@@ -48,18 +40,12 @@ jobs:
           sudo swapon /swapfile
           free -h
 
-      # ===============================
-      # CACHE DO CLANG
-      # ===============================
       - name: Cache Clang Toolchain
         uses: actions/cache@v4
         with:
           path: kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b
           key: clang-r416183b-${{ runner.os }}
 
-      # ===============================
-      # DOWNLOAD CLANG (r416183b para waipio/S22)
-      # ===============================
       - name: Download and Configure Clang Toolchain
         run: |
           TOOLCHAIN_DIR="kernel_platform/prebuilts-master/clang/host/linux-x86"
@@ -73,15 +59,13 @@ jobs:
           fi
           cd -
 
-      # ===============================
-      # PREPARAR E EXECUTAR BUILD
-      # ===============================
       - name: Prepare Build Environment and Run Build
+        shell: bash
         run: |
           cd kernel_platform || { echo "Pasta kernel_platform não encontrada"; exit 1; }
 
           cat <<'EOF' > build_my.sh
-          #!/bin/bash
+          #!/usr/bin/env bash
           set -e
 
           export BUILD_TARGET=g0q_gbl_openx
@@ -108,18 +92,25 @@ jobs:
           export LLVM_IAS=1
           export LD=ld.lld
 
-          # Debug: variáveis principais
+          # Debug avançado
+          echo "pwd atual: $(/bin/pwd)"
           echo "ANDROID_BUILD_TOP: ${ANDROID_BUILD_TOP}"
           echo "ANDROID_PRODUCT_OUT: ${ANDROID_PRODUCT_OUT}"
           echo "OUT_DIR: ${OUT_DIR}"
-          echo "PATH (primeiros 100 chars): ${PATH:0:100}..."
+          echo "which realpath: $(which realpath || echo 'não encontrado')"
+          echo "which readlink: $(which readlink || echo 'não encontrado')"
+          echo "which dirname: $(which dirname || echo 'não encontrado')"
+          ls -la build/android/prepare_vendor.sh || echo "prepare_vendor.sh não encontrado"
 
-          # Build principal
+          # Força ROOT_DIR para compatibilidade
+          export ROOT_DIR=$(pwd)
+          echo "ROOT_DIR forçado: ${ROOT_DIR}"
+
           if [ -f build/android/prepare_vendor.sh ]; then
             echo "Executando prepare_vendor.sh"
             RECOMPILE_KERNEL=1 ./build/android/prepare_vendor.sh sec "${TARGET_PRODUCT}"
           else
-            echo "Executando build_kernel_GKI.sh (fallback)"
+            echo "prepare_vendor.sh não encontrado - fallback"
             RECOMPILE_KERNEL=1 ../build_kernel_GKI.sh
           fi
           EOF
@@ -127,31 +118,21 @@ jobs:
           chmod +x build_my.sh
           ./build_my.sh || { echo "Build falhou - veja logs acima"; exit 1; }
 
-      # ===============================
-      # COLETAR ARQUIVOS GERADOS
-      # ===============================
       - name: Collect Kernel Image, DTBO and Modules
         run: |
           mkdir -p kernel-out/Image kernel-out/dtbo kernel-out/modules
 
-          # Kernel Image
           find ../out/ -type f \( -name "Image*" -o -name "*.gz" -o -name "*.lz4" \) -exec cp {} kernel-out/Image/ \; || true
 
-          # DTB / DTBO
           find ../out/ -type f -name "*dtb*" -o -name "dtbo.img" -exec cp {} kernel-out/dtbo/ \; || true
 
-          # Módulos .ko
           find ../out/ -name "*.ko" -exec cp {} kernel-out/modules/ \; || true
 
-          # modules.load básico
           cd kernel-out/modules
           if ls *.ko >/dev/null 2>&1; then
             find . -name "*.ko" | sed 's|./||' | sort > modules.load
           fi
 
-      # ===============================
-      # CRIAR vendor_dlkm.img
-      # ===============================
       - name: Create vendor_dlkm.img
         run: |
           cd kernel-out
@@ -167,9 +148,6 @@ jobs:
           sudo umount mnt
           rm -rf vendor_dlkm
 
-      # ===============================
-      # COMPACTAR E UPLOAD
-      # ===============================
       - name: Compress and Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
