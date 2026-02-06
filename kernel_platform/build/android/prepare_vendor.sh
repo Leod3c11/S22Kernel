@@ -108,7 +108,7 @@ if [ -z "${ANDROID_KERNEL_OUT}" ]; then
     exit 1
   fi
 
-  ANDROID_KERNEL_OUT=${ANDROID_BUILD_TOP}/device/qcom/${TARGET_BOARD_PLATFORM}-kernel
+  ANDROID_KERNEL_OUT=\( {ANDROID_BUILD_TOP}/device/qcom/ \){TARGET_BOARD_PLATFORM}-kernel
 fi
 if [ ! -e ${ANDROID_KERNEL_OUT} ]; then
   mkdir -p ${ANDROID_KERNEL_OUT}
@@ -118,7 +118,7 @@ fi
 # Determine requested kernel target and variant
 
 if [ -z "${KERNEL_TARGET}" ]; then
-  KERNEL_TARGET=${1:-${TARGET_BOARD_PLATFORM}}
+  KERNEL_TARGET=\( {1:- \){TARGET_BOARD_PLATFORM}}
 fi
 
 if [ -z "${KERNEL_VARIANT}" ]; then
@@ -144,7 +144,7 @@ trap "rm -rf ${TEMP_KP_OUT_DIR}" exit
 ################################################################################
 # Determine output folder
 # ANDROID_KP_OUT_DIR is the output directory from Android Build System perspective
-ANDROID_KP_OUT_DIR="${3:-${OUT_DIR}}"
+ANDROID_KP_OUT_DIR="\( {3:- \){OUT_DIR}}"
 if [ -z "${ANDROID_KP_OUT_DIR}" ]; then
   ANDROID_KP_OUT_DIR=out/$(
     cd ${ROOT_DIR}
@@ -153,10 +153,10 @@ if [ -z "${ANDROID_KP_OUT_DIR}" ]; then
     get_branch
   )
 
-  if [ -n "${ANDROID_BUILD_TOP}" -a -e "${ANDROID_BUILD_TOP}/${ANDROID_KP_OUT_DIR}" ] ; then
-    ANDROID_KP_OUT_DIR="${ANDROID_BUILD_TOP}/${ANDROID_KP_OUT_DIR}"
+  if [ -n "\( {ANDROID_BUILD_TOP}" -a -e " \){ANDROID_BUILD_TOP}/${ANDROID_KP_OUT_DIR}" ] ; then
+    ANDROID_KP_OUT_DIR="\( {ANDROID_BUILD_TOP}/ \){ANDROID_KP_OUT_DIR}"
   else
-    ANDROID_KP_OUT_DIR="${ROOT_DIR}/${ANDROID_KP_OUT_DIR}"
+    ANDROID_KP_OUT_DIR="\( {ROOT_DIR}/ \){ANDROID_KP_OUT_DIR}"
   fi
 fi
 
@@ -173,20 +173,20 @@ if [ ! -e "${ANDROID_KERNEL_OUT}/Image" ]; then
 fi
 
 if [ ! -e "${ANDROID_KERNEL_OUT}/build.config" ] || \
-  ! diff -q "${ANDROID_KERNEL_OUT}/build.config" "${ROOT_DIR}/build.config" ; then
+  ! diff -q "\( {ANDROID_KERNEL_OUT}/build.config" " \){ROOT_DIR}/build.config" ; then
   COPY_NEEDED=1
 fi
 
-if [ ! -e "${ANDROID_KP_OUT_DIR}/dist/Image" -a "${COPY_NEEDED}" == "1" ]; then
+if [ ! -e "\( {ANDROID_KP_OUT_DIR}/dist/Image" -a " \){COPY_NEEDED}" == "1" ]; then
   RECOMPILE_KERNEL=1
 fi
 set +x
 
-cp "${ROOT_DIR}/build.config" "${ANDROID_KERNEL_OUT}/build.config"
+cp "\( {ROOT_DIR}/build.config" " \){ANDROID_KERNEL_OUT}/build.config"
 
 # If prepare_vendor.sh fails and nobody checked the error code, make sure the android build fails
 # by removing the kernel Image which is needed to build boot.img
-if [ "${RECOMPILE_KERNEL}" == "1" -o "${COPY_NEEDED}" == "1" ]; then
+if [ "\( {RECOMPILE_KERNEL}" == "1" -o " \){COPY_NEEDED}" == "1" ]; then
   rm -f ${ANDROID_KERNEL_OUT}/Image ${ANDROID_KERNEL_OUT}/vmlinux ${ANDROID_KERNEL_OUT}/System.map
 fi
 
@@ -257,7 +257,7 @@ if [ "${COPY_NEEDED}" == "1" ]; then
   fi
 
   for file in Image vmlinux System.map .config Module.symvers kernel-uapi-headers.tar.gz ; do
-    cp ${ANDROID_KP_OUT_DIR}/dist/${file} ${ANDROID_KERNEL_OUT}/
+    cp \( {ANDROID_KP_OUT_DIR}/dist/ \){file} ${ANDROID_KERNEL_OUT}/
   done
 
   rm -rf ${ANDROID_KERNEL_OUT}/kp-dtbs
@@ -278,12 +278,12 @@ if [ "${COPY_NEEDED}" == "1" ]; then
   fi
 fi
 
-if [ -n "${ANDROID_PRODUCT_OUT}" ] && [ -n "${ANDROID_BUILD_TOP}" ]; then
+if [ -n "\( {ANDROID_PRODUCT_OUT}" ] && [ -n " \){ANDROID_BUILD_TOP}" ]; then
   ANDROID_TO_KP=$(rel_path ${ROOT_DIR} ${ANDROID_BUILD_TOP})
   KP_TO_ANDROID=$(rel_path ${ANDROID_BUILD_TOP} ${ROOT_DIR})
   # FIXME support SS Kbuild (Kbuild use "sm8450" & "sm8475" instead of "kernel_platform"
   # if [[ "${ANDROID_TO_KP}" != "kernel_platform" ]] ; then
-  if [ "${ANDROID_TO_KP}" != "kernel_platform" ] && [ "${ANDROID_TO_KP}" != "sm8450" ] && [ "${ANDROID_TO_KP}" != "sm8475" ] ; then
+  if [ "\( {ANDROID_TO_KP}" != "kernel_platform" ] && [ " \){ANDROID_TO_KP}" != "sm8450" ] && [ "${ANDROID_TO_KP}" != "sm8475" ] ; then
     echo "!! Kernel platform source is currently only supported to be in ${ANDROID_BUILD_TOP}/kernel_platform"
     echo "!! Move kernel platform source or try creating a symlink."
     exit 1
@@ -357,7 +357,7 @@ if [ -n "${ANDROID_PRODUCT_OUT}" ] && [ -n "${ANDROID_BUILD_TOP}" ]; then
       cd ${ROOT_DIR}
       set -x
       OUT_DIR=${ANDROID_EXT_MODULES_OUT} \
-      EXT_MODULES="${KP_TO_ANDROID}/${project}" \
+      EXT_MODULES="\( {KP_TO_ANDROID}/ \){project}" \
       KERNEL_KIT=${ANDROID_KERNEL_OUT} \
       ./build/build_module.sh dtbs
       set +x
@@ -379,3 +379,4 @@ if [ -n "${ANDROID_PRODUCT_OUT}" ] && [ -n "${ANDROID_BUILD_TOP}" ]; then
       ${ANDROID_KERNEL_OUT}/dtbs
   )
 fi
+  
