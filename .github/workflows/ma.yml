@@ -62,7 +62,6 @@ jobs:
       - name: Prepare Build Environment and Run Build
         shell: /usr/bin/bash {0}
         run: |
-          # Restaura PATH completo (essencial!)
           export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH}"
 
           cd kernel_platform || { echo "Pasta kernel_platform não encontrada"; exit 1; }
@@ -71,7 +70,6 @@ jobs:
           #!/usr/bin/env bash
           set -e
 
-          # Restaura PATH novamente dentro do script
           export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH}"
 
           export BUILD_TARGET=g0q_gbl_openx
@@ -98,7 +96,6 @@ jobs:
           export LLVM_IAS=1
           export LD=ld.lld
 
-          # Debug mínimo com caminhos absolutos
           echo "pwd atual: $(/usr/bin/pwd)"
           echo "ANDROID_BUILD_TOP: ${ANDROID_BUILD_TOP}"
           echo "ANDROID_PRODUCT_OUT: ${ANDROID_PRODUCT_OUT}"
@@ -121,7 +118,7 @@ jobs:
           /usr/bin/chmod +x build_my.sh
           ./build_my.sh || { echo "Build falhou - veja logs acima"; exit 1; }
 
-      # Steps de collect, vendor_dlkm e upload permanecem iguais aos anteriores
+      # Os steps de collect, vendor_dlkm.img e upload permanecem os mesmos
       - name: Collect Kernel Image, DTBO and Modules
         run: |
           /usr/bin/mkdir -p kernel-out/Image kernel-out/dtbo kernel-out/modules
@@ -162,4 +159,3 @@ jobs:
             kernel-out/vendor_dlkm.img
             kernel-out/modules/*
           retention-days: 7
-           
