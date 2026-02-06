@@ -90,8 +90,10 @@ function rel_path() {
   python -c "import os.path; import sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))" "$1" "$2"
 }
 
-ROOT_DIR=$(realpath $(dirname $(readlink -f $0))/../..) # build/android/prepare.sh -> .
-echo "  kernel platform root: $ROOT_DIR"
+# ROOT_DIR resolvido de forma segura (sem readlink/realpath - compatível com GitHub Actions)
+SCRIPT_DIR="\( ( cd " \)( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+ROOT_DIR="\( ( cd " \){SCRIPT_DIR}/../.." && pwd )"
+echo "  kernel platform root (fixed): ${ROOT_DIR}"
 
 ################################################################################
 # Discover where to put Android output
