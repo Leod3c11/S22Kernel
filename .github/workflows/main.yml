@@ -288,8 +288,3 @@ jobs:
           path: build.log
           retention-days: 3
           if-no-files-found: ignore
-with:
-          name: build-log-${{ github.run_number }}
-          path: build.log
-          retention-days: 3
-          if-no-files-found: ignore
