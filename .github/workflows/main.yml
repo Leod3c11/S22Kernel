@@ -96,18 +96,48 @@ jobs:
           echo "📦 Instalando ufdt_apply_overlay..."
           
           cd /tmp
-          rm -rf libufdt platform_system_libufdt 2>/dev/null || true
+          rm -rf libufdt 2>/dev/null || true
           
           # Clonar libufdt do Android
-          git clone --depth=1 https://github.com/aosp-mirror/platform_system_libufdt libufdt 2>/dev/null || \
-          git clone --depth=1 https://android.googlesource.com/platform/system/libufdt libufdt
+          git clone --depth=1 https://github.com/aosp-mirror/platform_system_libufdt libufdt
           
-          cd libufdt/utils/src
+          cd libufdt
           
-          # Compilar manualmente (sem Makefile)
-          echo "🔧 Compilando ufdt_apply_overlay..."
-          clang -o ufdt_apply_overlay ufdt_apply_overlay.c -I../../include -lfdt 2>/dev/null || \
-          gcc -o ufdt_apply_overlay ufdt_apply_overlay.c -I../../include -lfdt
+          # Verificar estrutura e encontrar arquivo fonte
+          echo "📂 Procurando ufdt_apply_overlay.c..."
+          find . -name "ufdt_apply_overlay.c" 2>/dev/null
+          
+          # O arquivo está em tests/ ou src/ dependendo da versão
+          if [ -f "tests/ufdt_apply_overlay.c" ]; then
+            SRC_DIR="tests"
+            INC_DIR="include"
+          elif [ -f "src/ufdt_apply_overlay.c" ]; then
+            SRC_DIR="src"
+            INC_DIR="include"
+          else
+            # Buscar em todo o repo
+            SRC_PATH=$(find . -name "ufdt_apply_overlay.c" | head -1)
+            if [ -z "$SRC_PATH" ]; then
+              echo "❌ ufdt_apply_overlay.c não encontrado"
+              exit 1
+            fi
+            SRC_DIR=$(dirname "$SRC_PATH")
+            INC_DIR="include"
+          fi
+          
+          echo "📁 Compilando de: $SRC_DIR"
+          cd "$SRC_DIR"
+          
+          # Compilar manualmente
+          echo "🔧 Compilando..."
+          clang -o ufdt_apply_overlay ufdt_apply_overlay.c \
+            -I../${INC_DIR} -I/usr/include \
+            -L/usr/lib/x86_64-linux-gnu \
+            -lfdt 2>/dev/null || \
+          gcc -o ufdt_apply_overlay ufdt_apply_overlay.c \
+            -I../${INC_DIR} -I/usr/include \
+            -L/usr/lib/x86_64-linux-gnu \
+            -lfdt
           
           # Instalar no PATH
           sudo cp ufdt_apply_overlay /usr/local/bin/
