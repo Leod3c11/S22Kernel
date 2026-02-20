@@ -1,10 +1,9 @@
-name: Build S22 Kernel (kernel_platform)
+name: Build S22 Kernel
 
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [main]
     paths:
       - 'kernel_platform/**'
       - 'msm-kernel/**'
@@ -14,385 +13,75 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
-    continue-on-error: false
 
     steps:
-      # ===============================
-      # CHECKOUT
-      # ===============================
-      - name: Checkout Repository
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
 
-      # ===============================
-      # DEPENDÊNCIAS DO SISTEMA
-      # ===============================
-      - name: Install Build Dependencies
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            bc bison build-essential flex libssl-dev \
-            libncurses5-dev libelf-dev binutils-dev \
-            qemu-user-static rsync wget tar unzip \
-            clang lld llvm device-tree-compiler \
-            lz4 ccache kmod e2fsprogs python3 \
-            libfdt-dev git
+          sudo apt-get install -y bc bison build-essential flex libssl-dev \
+            libncurses5-dev libelf-dev binutils-dev clang lld llvm \
+            device-tree-compiler lz4 ccache libfdt-dev git
 
-          echo "🔎 Verificando ferramentas:"
-          which bison && bison --version | head -1
-          which flex && flex --version | head -1
-          which clang && clang --version | head -1
-
-      # ===============================
-      # SWAP (CRÍTICO PARA LTO)
-      # ===============================
-      - name: Setup Swap Space (OOM fix)
+      - name: Setup swap
         run: |
-          echo "🧠 Configurando swap..."
-          sudo swapoff -a 2>/dev/null || true
-          sudo rm -f /swapfile
           sudo fallocate -l 20G /swapfile
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
-          echo "✅ Swap configurado:"
-          free -h
 
-      # ===============================
-      # CORRIGIR PATHS DE FERRAMENTAS
-      # ===============================
-      - name: Fix Build Tools Paths
+      - name: Fix defconfig symlink
         run: |
-          echo "🔧 Corrigindo paths de ferramentas..."
-          
-          # Remover path problemático que aponta para ferramentas inexistentes
-          if [ -d "kernel_platform/build/build-tools/path/linux-x86" ]; then
-            rm -rf kernel_platform/build/build-tools/path/linux-x86
-            echo "✅ Removido path problemático"
-          fi
-          
-          # Criar diretórios necessários
-          mkdir -p kernel_platform/prebuilts/build-tools/linux-x86/bin
-          
-          # Criar symlinks para ferramentas do sistema
-          for tool in bison flex m4; do
-            if command -v $tool &> /dev/null; then
-              ln -sf $(which $tool) kernel_platform/prebuilts/build-tools/linux-x86/bin/$tool 2>/dev/null || true
-              echo "  ✅ $tool -> $(which $tool)"
-            fi
-          done
-          
-          # Verificar estrutura
-          ls -la kernel_platform/prebuilts/build-tools/linux-x86/bin/ 2>/dev/null || echo "⚠️ Diretório não criado"
+          cd kernel_platform/msm-kernel/arch/arm64/configs/vendor
+          ln -sf waipio_sec_defconfig waipio_sec__defconfig 2>/dev/null || true
 
-      # ===============================
-      # INSTALAR ufdt_apply_overlay
-      # ===============================
       - name: Install ufdt_apply_overlay
         run: |
-          echo "📦 Instalando ufdt_apply_overlay..."
-          
           cd /tmp
-          
-          # Clonar libufdt do Android
-          git clone --depth=1 https://github.com/aosp-mirror/platform_system_libufdt 2>/dev/null || \
-          git clone --depth=1 https://android.googlesource.com/platform/system/libufdt
-          
-          if [ -d "platform_system_libufdt" ]; then
-            cd platform_system_libufdt
-          elif [ -d "libufdt" ]; then
-            cd libufdt
-          fi
-          
-          echo "📂 Estrutura do libufdt:"
-          ls -la
-          find . -name "Makefile" -o -name "ufdt_apply_overlay.c" 2>/dev/null | head -10
-          
-          # Compilar manualmente
-          if [ -f "utils/src/ufdt_apply_overlay.c" ]; then
-            cd utils/src
-            
-            echo "🔧 Compilando ufdt_apply_overlay..."
-            clang -o ufdt_apply_overlay ufdt_apply_overlay.c \
-              -I../../include -I/usr/include \
-              -L/usr/lib/x86_64-linux-gnu \
-              -lfdt 2>/dev/null || \
-            gcc -o ufdt_apply_overlay ufdt_apply_overlay.c \
-              -I../../include -I/usr/include \
-              -L/usr/lib/x86_64-linux-gnu \
-              -lfdt
-            
-            if [ -f "ufdt_apply_overlay" ]; then
-              sudo cp ufdt_apply_overlay /usr/local/bin/
-              sudo chmod +x /usr/local/bin/ufdt_apply_overlay
-              echo "✅ ufdt_apply_overlay compilado e instalado"
-            fi
-          fi
-          
-          # Verificar instalação
-          if which ufdt_apply_overlay > /dev/null 2>&1; then
-            echo "✅ ufdt_apply_overlay disponível:"
-            ufdt_apply_overlay --help 2>&1 | head -3 || true
-          else
-            echo "⚠️ ufdt_apply_overlay não compilado, criando fallback..."
-            
-            # Criar wrapper usando dtc como fallback
-            sudo tee /usr/local/bin/ufdt_apply_overlay << 'EOF'
-#!/bin/bash
-# Fallback wrapper para ufdt_apply_overlay usando dtc
-if [ "$1" = "--help" ]; then
-  echo "ufdt_apply_overlay - DTBO verifier (fallback using dtc)"
-  echo "Usage: ufdt_apply_overlay <base.dtb> <overlay.dtbo> <output.dtb>"
-  exit 0
-fi
+          git clone --depth=1 https://github.com/aosp-mirror/platform_system_libufdt
+          cd platform_system_libufdt/utils/src
+          clang -o ufdt_apply_overlay ufdt_apply_overlay.c -I../../include -lfdt || \
+          gcc -o ufdt_apply_overlay ufdt_apply_overlay.c -I../../include -lfdt
+          sudo cp ufdt_apply_overlay /usr/local/bin/
 
-# Se for apenas verificação (um arquivo), usar dtc para validar
-if [ $# -eq 1 ] && [ -f "$1" ]; then
-  dtc -I dtb -O dts "$1" > /dev/null 2>&1 && echo "OK" || echo "WARNING: $1 may need verification"
-  exit 0
-fi
-
-# Para merge real, usar fdtoverlay se disponível, ou apenas copiar
-if command -v fdtoverlay > /dev/null 2>&1; then
-  fdtoverlay "$@"
-else
-  echo "Warning: fdtoverlay not available, copying base dtb"
-  cp "$1" "$3" 2>/dev/null || touch "$3"
-fi
-EOF
-            sudo chmod +x /usr/local/bin/ufdt_apply_overlay
-            echo "✅ Wrapper fallback criado"
-          fi
-          
-          which ufdt_apply_overlay
-
-      # ===============================
-      # CORRIGIR DEFCONFIG (DOUBLE UNDERSCORE)
-      # ===============================
-      - name: Fix Double Underscore Defconfig
-        run: |
-          echo "🔧 Corrigindo nome do defconfig..."
-          
-          CONFIG_DIR="kernel_platform/msm-kernel/arch/arm64/configs/vendor"
-          
-          if [ -f "$CONFIG_DIR/waipio_sec_defconfig" ]; then
-            cd "$CONFIG_DIR"
-            
-            # Criar symlink se o arquivo com __ não existe
-            if [ ! -f "waipio_sec__defconfig" ]; then
-              ln -s waipio_sec_defconfig waipio_sec__defconfig
-              echo "✅ Symlink criado: waipio_sec__defconfig -> waipio_sec_defconfig"
-            fi
-            
-            echo "📋 Defconfigs disponíveis:"
-            ls -la waipio_sec*defconfig
-          else
-            echo "⚠️ waipio_sec_defconfig não encontrado em $CONFIG_DIR"
-            find kernel_platform -name "*waipio*defconfig" 2>/dev/null || true
-          fi
-
-      # ===============================
-      # CLANG AOSP (r416183b)
-      # ===============================
-      - name: Cache Clang Toolchain
+      - name: Cache Clang
         id: cache-clang
         uses: actions/cache@v4
         with:
           path: kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b
-          key: clang-r416183b-v1-${{ runner.os }}
+          key: clang-r416183b-${{ runner.os }}
 
-      - name: Download and Configure Clang Toolchain
+      - name: Download Clang
         if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
-          TOOLCHAIN_DIR="kernel_platform/prebuilts-master/clang/host/linux-x86"
-          CLANG_TAR="clang-r416183b.tar.gz"
-          CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12L-gsi/clang-r416183b.tar.gz"
-          
-          echo "📥 Baixando Clang de: $CLANG_URL"
-          mkdir -p "$TOOLCHAIN_DIR"
-          cd "$TOOLCHAIN_DIR"
-          
-          wget -q --show-progress --timeout=300 "$CLANG_URL" -O "$CLANG_TAR" || {
-            echo "❌ Falha no download do Clang"
-            exit 1
-          }
-          
-          echo "📦 Extraindo Clang..."
+          mkdir -p kernel_platform/prebuilts-master/clang/host/linux-x86
+          cd kernel_platform/prebuilts-master/clang/host/linux-x86
+          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12L-gsi/clang-r416183b.tar.gz -O clang.tar.gz
           mkdir -p clang-r416183b
-          tar -C clang-r416183b -xzf "$CLANG_TAR" || {
-            echo "❌ Falha na extração do Clang"
-            exit 1
-          }
-          rm -f "$CLANG_TAR"
-          
-          echo "✅ Clang instalado"
-          ls -la clang-r416183b/bin/clang
+          tar -C clang-r416183b -xzf clang.tar.gz
+          rm clang.tar.gz
 
-      - name: Verify Clang Installation
+      - name: Build
         run: |
-          CLANG_BIN="kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin"
-          if [ ! -f "$CLANG_BIN/clang" ]; then
-            echo "❌ Clang não encontrado"
-            exit 1
-          fi
-          echo "✅ Clang verificado:"
-          "$CLANG_BIN/clang" --version | head -1
-
-      # ===============================
-      # PREPARAÇÃO DO AMBIENTE
-      # ===============================
-      - name: Prepare Build Script
-        run: |
-          set -e
-          
-          # Verificar estrutura do projeto
-          if [ ! -d "kernel_platform" ]; then
-            echo "❌ Pasta kernel_platform não encontrada"
-            exit 1
-          fi
-          
-          if [ ! -f "build_kernel_GKI.sh" ]; then
-            echo "❌ Script build_kernel_GKI.sh não encontrado"
-            exit 1
-          fi
-          
-          # Criar script de build
-          cat > my_build.sh << 'BUILDSCRIPT'
-          #!/bin/bash
-          set -e
-
-          # Configurações críticas
-          export MAKEFLAGS="-j$(nproc --all 2>/dev/null || echo 4)"
-          export HERMETIC_TOOLCHAIN=0
-
-          # Clang AOSP
           export CLANG_PREBUILT_BIN="kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin"
-
-          # LLVM obrigatório para GKI
+          export PATH="/usr/bin:/bin:/usr/sbin:/sbin:${CLANG_PREBUILT_BIN}:${PATH}"
           export LLVM=1
           export LLVM_IAS=1
-          export LD=ld.lld
-
-          # PATH seguro - ferramentas do sistema primeiro
-          export PATH="/usr/bin:/bin:/usr/sbin:/sbin:${CLANG_PREBUILT_BIN}:${PATH}"
-
-          # Ferramentas explícitas do sistema
-          export BISON=/usr/bin/bison
-          export FLEX=/usr/bin/flex
-          export M4=/usr/bin/m4
-          export DTC=/usr/bin/dtc
-
-          # Variáveis LLVM completas
           export CC="${CLANG_PREBUILT_BIN}/clang"
-          export CXX="${CLANG_PREBUILT_BIN}/clang++"
-          export AR="${CLANG_PREBUILT_BIN}/llvm-ar"
-          export NM="${CLANG_PREBUILT_BIN}/llvm-nm"
-          export STRIP="${CLANG_PREBUILT_BIN}/llvm-strip"
-          export OBJCOPY="${CLANG_PREBUILT_BIN}/llvm-objcopy"
-          export OBJDUMP="${CLANG_PREBUILT_BIN}/llvm-objdump"
-          export READELF="${CLANG_PREBUILT_BIN}/llvm-readelf"
-          export HOSTCC="${CLANG_PREBUILT_BIN}/clang"
-          export HOSTCXX="${CLANG_PREBUILT_BIN}/clang++"
+          bash build_kernel_GKI.sh 2>&1 | tee build.log
 
-          # Desativar paths problemáticos
-          export SKIP_MRPROPER=1
-
-          echo "========================================"
-          echo "📋 Configurações do Build:"
-          echo "========================================"
-          echo "MAKEFLAGS: ${MAKEFLAGS}"
-          echo "CLANG_PREBUILT_BIN: ${CLANG_PREBUILT_BIN}"
-          echo "CC: ${CC}"
-          echo "BISON: ${BISON}"
-          echo "FLEX: ${FLEX}"
-          echo "PATH: ${PATH}"
-          echo "========================================"
-
-          # Verificar ferramentas
-          echo "🔎 Verificando ferramentas:"
-          which bison && bison --version | head -1
-          which flex && flex --version | head -1
-          which ufdt_apply_overlay && echo "✅ ufdt_apply_overlay disponível" || echo "⚠️ ufdt_apply_overlay não encontrado"
-
-          # Executar build
-          bash build_kernel_GKI.sh
-          BUILDSCRIPT
-
-          chmod +x my_build.sh
-          echo "✅ Script de build criado"
-
-      # ===============================
-      # BUILD DO KERNEL
-      # ===============================
-      - name: Build Kernel
-        run: |
-          echo "🚀 Iniciando build do kernel..."
-          ./my_build.sh 2>&1 | tee build.log
-          BUILD_STATUS=${PIPESTATUS[0]}
-          
-          if [ $BUILD_STATUS -ne 0 ]; then
-            echo "❌ Build falhou com código de erro: $BUILD_STATUS"
-            echo "📋 Últimas 100 linhas do log:"
-            tail -100 build.log
-            exit $BUILD_STATUS
-          fi
-          
-          echo "✅ Build concluído com sucesso!"
-
-      # ===============================
-      # LISTAR ARQUIVOS COMPILADOS
-      # ===============================
-      - name: List Compiled Files
-        if: always()
-        run: |
-          echo "📂 Estrutura da pasta out/:"
-          find out/ -type f 2>/dev/null | head -50 || echo "⚠️ Pasta out/ não encontrada ou vazia"
-          
-          echo ""
-          echo "📂 Arquivos de imagem:"
-          find out/ -type f \( -name "Image*" -o -name "*.img" -o -name "*.dtb" -o -name "*.dtbo" \) 2>/dev/null | while read f; do
-            ls -lh "$f"
-          done
-
-      # ===============================
-      # COMPACTAR A PASTA OUT
-      # ===============================
-      - name: Compress Output Folder
-        if: always()
-        run: |
-          if [ -d "out/" ] && [ "$(ls -A out/ 2>/dev/null)" ]; then
-            echo "📦 Compactando pasta out/..."
-            tar -czf out.tar.gz out/
-            ls -lh out.tar.gz
-            echo "✅ Arquivo out.tar.gz criado"
-          else
-            echo "⚠️ Pasta out/ vazia ou não existe"
-            echo "Nenhum arquivo gerado" > out.txt
-            tar -czf out.tar.gz out.txt
-          fi
-
-      # ===============================
-      # UPLOAD DO ARTEFATO
-      # ===============================
-      - name: Upload Kernel Build Artifacts
+      - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: s22-kernel-artifacts-${{ github.run_number }}
-          path: out.tar.gz
-          retention-days: 7
+          name: kernel-build-${{ github.run_number }}
+          path: |
+            out.tar.gz
+            build.log
           if-no-files-found: warn
 
-      # ===============================
-      # UPLOAD DO LOG DE BUILD
-      # ===============================
-      - name: Upload Build Log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log-${{ github.run_number }}
-          path: build.log
-          retention-days: 3
-          if-no-files-found: ignore
