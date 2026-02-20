@@ -37,8 +37,9 @@ jobs:
             libncurses5-dev libelf-dev binutils-dev \
             qemu-user-static rsync wget tar unzip \
             clang lld llvm device-tree-compiler \
-            lz4 ccache kmod e2fsprogs python3
-          
+            lz4 ccache kmod e2fsprogs python3 \
+            libfdt-dev git
+
           echo "🔎 Verificando ferramentas:"
           which bison && bison --version | head -1
           which flex && flex --version | head -1
@@ -85,6 +86,58 @@ jobs:
           
           # Verificar estrutura
           ls -la kernel_platform/prebuilts/build-tools/linux-x86/bin/ 2>/dev/null || echo "⚠️ Diretório não criado"
+
+      # ===============================
+      # INSTALAR ufdt_apply_overlay
+      # ===============================
+      - name: Install ufdt_apply_overlay
+        run: |
+          echo "📦 Instalando ufdt_apply_overlay..."
+          
+          cd /tmp
+          
+          # Clonar libufdt do Android
+          git clone --depth=1 https://android.googlesource.com/platform/system/libufdt 2>/dev/null || \
+          git clone --depth=1 https://github.com/aosp-mirror/platform_system_libufdt
+          
+          cd libufdt/utils/src
+          
+          # Compilar com clang ou gcc
+          make CC=clang CXX=clang++ || make CC=gcc CXX=g++
+          
+          # Instalar no PATH
+          sudo cp ufdt_apply_overlay /usr/local/bin/
+          sudo chmod +x /usr/local/bin/ufdt_apply_overlay
+          
+          # Verificar
+          echo "✅ ufdt_apply_overlay instalado:"
+          which ufdt_apply_overlay
+          ufdt_apply_overlay --help 2>&1 | head -3 || true
+
+      # ===============================
+      # CORRIGIR DEFCONFIG (DOUBLE UNDERSCORE)
+      # ===============================
+      - name: Fix Double Underscore Defconfig
+        run: |
+          echo "🔧 Corrigindo nome do defconfig..."
+          
+          CONFIG_DIR="kernel_platform/msm-kernel/arch/arm64/configs/vendor"
+          
+          if [ -f "$CONFIG_DIR/waipio_sec_defconfig" ]; then
+            cd "$CONFIG_DIR"
+            
+            # Criar symlink se o arquivo com __ não existe
+            if [ ! -f "waipio_sec__defconfig" ]; then
+              ln -s waipio_sec_defconfig waipio_sec__defconfig
+              echo "✅ Symlink criado: waipio_sec__defconfig -> waipio_sec_defconfig"
+            fi
+            
+            echo "📋 Defconfigs disponíveis:"
+            ls -la waipio_sec*defconfig
+          else
+            echo "⚠️ waipio_sec_defconfig não encontrado em $CONFIG_DIR"
+            find kernel_platform -name "*waipio*defconfig" 2>/dev/null || true
+          fi
 
       # ===============================
       # CLANG AOSP (r416183b)
@@ -207,6 +260,7 @@ jobs:
           echo "🔎 Verificando ferramentas:"
           which bison && bison --version | head -1
           which flex && flex --version | head -1
+          which ufdt_apply_overlay && echo "✅ ufdt_apply_overlay disponível"
 
           # Executar build
           bash build_kernel_GKI.sh
@@ -244,7 +298,7 @@ jobs:
           
           echo ""
           echo "📂 Arquivos de imagem:"
-          find out/ -type f \( -name "Image*" -o -name "*.img" -o -name "*.dtb" \) 2>/dev/null | while read f; do
+          find out/ -type f \( -name "Image*" -o -name "*.img" -o -name "*.dtb" -o -name "*.dtbo" \) 2>/dev/null | while read f; do
             ls -lh "$f"
           done
 
@@ -288,3 +342,4 @@ jobs:
           path: build.log
           retention-days: 3
           if-no-files-found: ignore
+
