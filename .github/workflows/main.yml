@@ -37,12 +37,12 @@ jobs:
             libncurses5-dev libelf-dev binutils-dev \
             qemu-user-static rsync wget tar unzip \
             clang lld llvm device-tree-compiler \
-            lz4 ccache kmod e2fsprogs
+            lz4 ccache kmod e2fsprogs python3
           
           echo "🔎 Verificando ferramentas:"
-          echo "  clang: $(which clang 2>/dev/null || echo 'não encontrado')"
-          echo "  ld.lld: $(which ld.lld 2>/dev/null || echo 'não encontrado')"
-          clang --version 2>/dev/null | head -1 || true
+          which bison && bison --version | head -1
+          which flex && flex --version | head -1
+          which clang && clang --version | head -1
 
       # ===============================
       # SWAP (CRÍTICO PARA LTO)
@@ -58,42 +58,33 @@ jobs:
           sudo swapon /swapfile
           echo "✅ Swap configurado:"
           free -h
-          swapon -s
 
       # ===============================
-      # UFDT (DTBO OVERLAY TOOL)
+      # CORRIGIR PATHS DE FERRAMENTAS
       # ===============================
-      - name: Install ufdt_apply_overlay
+      - name: Fix Build Tools Paths
         run: |
-          set -e
-          echo "📥 Instalando ufdt_apply_overlay..."
+          echo "🔧 Corrigindo paths de ferramentas..."
           
-          # Tentar baixar binário pré-compilado
-          UFDT_URL="https://github.com/PixelExperience/prebuilts_misc/raw/eleven/ufdt/ufdt_apply_overlay"
-          
-          if wget -q --timeout=30 "$UFDT_URL" -O /tmp/ufdt_apply_overlay 2>/dev/null; then
-            sudo cp /tmp/ufdt_apply_overlay /usr/local/bin/ufdt_apply_overlay
-            sudo chmod +x /usr/local/bin/ufdt_apply_overlay
-            echo "✅ ufdt_apply_overlay instalado (binário)"
-          else
-            echo "⚠️ Tentando compilar do código fonte..."
-            # Compilar do código fonte
-            git clone --depth 1 https://android.googlesource.com/platform/system/libufdt /tmp/libufdt 2>/dev/null || {
-              echo "⚠️ Não foi possível obter ufdt_apply_overlay"
-              exit 0  # Não falhar o build por causa disso
-            }
-            
-            if [ -f /tmp/libufdt/src/ufdt_apply_overlay.c ]; then
-              cd /tmp/libufdt/src
-              gcc -o ufdt_apply_overlay ufdt_apply_overlay.c -I../include 2>/dev/null && {
-                sudo cp ufdt_apply_overlay /usr/local/bin/
-                sudo chmod +x /usr/local/bin/ufdt_apply_overlay
-                echo "✅ ufdt_apply_overlay compilado e instalado"
-              } || echo "⚠️ Falha na compilação do ufdt_apply_overlay"
-            fi
+          # Remover path problemático que aponta para ferramentas inexistentes
+          if [ -d "kernel_platform/build/build-tools/path/linux-x86" ]; then
+            rm -rf kernel_platform/build/build-tools/path/linux-x86
+            echo "✅ Removido path problemático"
           fi
           
-          which ufdt_apply_overlay 2>/dev/null || echo "⚠️ ufdt_apply_overlay não disponível"
+          # Criar diretórios necessários
+          mkdir -p kernel_platform/prebuilts/build-tools/linux-x86/bin
+          
+          # Criar symlinks para ferramentas do sistema
+          for tool in bison flex m4; do
+            if command -v $tool &> /dev/null; then
+              ln -sf $(which $tool) kernel_platform/prebuilts/build-tools/linux-x86/bin/$tool 2>/dev/null || true
+              echo "  ✅ $tool -> $(which $tool)"
+            fi
+          done
+          
+          # Verificar estrutura
+          ls -la kernel_platform/prebuilts/build-tools/linux-x86/bin/ 2>/dev/null || echo "⚠️ Diretório não criado"
 
       # ===============================
       # CLANG AOSP (r416183b)
@@ -129,7 +120,7 @@ jobs:
           }
           rm -f "$CLANG_TAR"
           
-          echo "✅ Clang instalado em: $(pwd)/clang-r416183b"
+          echo "✅ Clang instalado"
           ls -la clang-r416183b/bin/clang
 
       - name: Verify Clang Installation
@@ -177,10 +168,16 @@ jobs:
           export LLVM_IAS=1
           export LD=ld.lld
 
-          # PATH seguro
-          export PATH="${CLANG_PREBUILT_BIN}:/usr/bin:/bin:/usr/sbin:/sbin:${PATH}"
+          # PATH seguro - ferramentas do sistema primeiro
+          export PATH="/usr/bin:/bin:/usr/sbin:/sbin:${CLANG_PREBUILT_BIN}:${PATH}"
 
-          # Ferramentas explícitas
+          # Ferramentas explícitas do sistema
+          export BISON=/usr/bin/bison
+          export FLEX=/usr/bin/flex
+          export M4=/usr/bin/m4
+          export DTC=/usr/bin/dtc
+
+          # Variáveis LLVM completas
           export CC="${CLANG_PREBUILT_BIN}/clang"
           export CXX="${CLANG_PREBUILT_BIN}/clang++"
           export AR="${CLANG_PREBUILT_BIN}/llvm-ar"
@@ -189,9 +186,11 @@ jobs:
           export OBJCOPY="${CLANG_PREBUILT_BIN}/llvm-objcopy"
           export OBJDUMP="${CLANG_PREBUILT_BIN}/llvm-objdump"
           export READELF="${CLANG_PREBUILT_BIN}/llvm-readelf"
-          export BISON=/usr/bin/bison
-          export FLEX=/usr/bin/flex
-          export M4=/usr/bin/m4
+          export HOSTCC="${CLANG_PREBUILT_BIN}/clang"
+          export HOSTCXX="${CLANG_PREBUILT_BIN}/clang++"
+
+          # Desativar paths problemáticos
+          export SKIP_MRPROPER=1
 
           echo "========================================"
           echo "📋 Configurações do Build:"
@@ -199,8 +198,15 @@ jobs:
           echo "MAKEFLAGS: ${MAKEFLAGS}"
           echo "CLANG_PREBUILT_BIN: ${CLANG_PREBUILT_BIN}"
           echo "CC: ${CC}"
+          echo "BISON: ${BISON}"
+          echo "FLEX: ${FLEX}"
           echo "PATH: ${PATH}"
           echo "========================================"
+
+          # Verificar ferramentas
+          echo "🔎 Verificando ferramentas:"
+          which bison && bison --version | head -1
+          which flex && flex --version | head -1
 
           # Executar build
           bash build_kernel_GKI.sh
@@ -220,8 +226,8 @@ jobs:
           
           if [ $BUILD_STATUS -ne 0 ]; then
             echo "❌ Build falhou com código de erro: $BUILD_STATUS"
-            echo "📋 Últimas 50 linhas do log:"
-            tail -50 build.log
+            echo "📋 Últimas 100 linhas do log:"
+            tail -100 build.log
             exit $BUILD_STATUS
           fi
           
@@ -255,7 +261,6 @@ jobs:
             echo "✅ Arquivo out.tar.gz criado"
           else
             echo "⚠️ Pasta out/ vazia ou não existe"
-            # Criar arquivo vazio para não falhar o upload
             echo "Nenhum arquivo gerado" > out.txt
             tar -czf out.tar.gz out.txt
           fi
@@ -279,6 +284,11 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
+          name: build-log-${{ github.run_number }}
+          path: build.log
+          retention-days: 3
+          if-no-files-found: ignore
+with:
           name: build-log-${{ github.run_number }}
           path: build.log
           retention-days: 3
