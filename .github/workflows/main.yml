@@ -12,160 +12,274 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    continue-on-error: true  # garante que mesmo se der erro, os steps finais rodem
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    continue-on-error: false
 
     steps:
-    # ===============================
-    # CHECKOUT
-    # ===============================
-    - name: Checkout Repository
-      uses: actions/checkout@v4
-      with:
-        submodules: true
+      # ===============================
+      # CHECKOUT
+      # ===============================
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
 
-    # ===============================
-    # DEPENDÊNCIAS DO SISTEMA
-    # ===============================
-    - name: Install Build Dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          bc bison build-essential flex libssl-dev \
-          libncurses5-dev libelf-dev binutils-dev \
-          qemu-user-static rsync wget tar \
-          clang lld llvm device-tree-compiler
+      # ===============================
+      # DEPENDÊNCIAS DO SISTEMA
+      # ===============================
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential flex libssl-dev \
+            libncurses5-dev libelf-dev binutils-dev \
+            qemu-user-static rsync wget tar unzip \
+            clang lld llvm device-tree-compiler \
+            lz4 ccache kmod e2fsprogs
+          
+          echo "🔎 Verificando ferramentas:"
+          echo "  clang: $(which clang 2>/dev/null || echo 'não encontrado')"
+          echo "  ld.lld: $(which ld.lld 2>/dev/null || echo 'não encontrado')"
+          clang --version 2>/dev/null | head -1 || true
 
-        echo "🔎 Verificando LLVM"
-        which clang
-        which ld.lld
-        clang --version
-        ld.lld --version
+      # ===============================
+      # SWAP (CRÍTICO PARA LTO)
+      # ===============================
+      - name: Setup Swap Space (OOM fix)
+        run: |
+          echo "🧠 Configurando swap..."
+          sudo swapoff -a 2>/dev/null || true
+          sudo rm -f /swapfile
+          sudo fallocate -l 20G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          echo "✅ Swap configurado:"
+          free -h
+          swapon -s
 
-    # ===============================
-    # SWAP (CRÍTICO PARA LTO)
-    # ===============================
-    - name: Setup Swap Space (OOM fix)
-      run: |
-        echo "🧠 Criando swap de 8GB"
-        sudo swapoff -a || true
-        sudo dd if=/dev/zero of=/swapfile bs=1M count=8192
-        sudo chmod 600 /swapfile
-        sudo mkswap /swapfile
-        sudo swapon /swapfile
-        free -h
+      # ===============================
+      # UFDT (DTBO OVERLAY TOOL)
+      # ===============================
+      - name: Install ufdt_apply_overlay
+        run: |
+          set -e
+          echo "📥 Instalando ufdt_apply_overlay..."
+          
+          # Tentar baixar binário pré-compilado
+          UFDT_URL="https://github.com/PixelExperience/prebuilts_misc/raw/eleven/ufdt/ufdt_apply_overlay"
+          
+          if wget -q --timeout=30 "$UFDT_URL" -O /tmp/ufdt_apply_overlay 2>/dev/null; then
+            sudo cp /tmp/ufdt_apply_overlay /usr/local/bin/ufdt_apply_overlay
+            sudo chmod +x /usr/local/bin/ufdt_apply_overlay
+            echo "✅ ufdt_apply_overlay instalado (binário)"
+          else
+            echo "⚠️ Tentando compilar do código fonte..."
+            # Compilar do código fonte
+            git clone --depth 1 https://android.googlesource.com/platform/system/libufdt /tmp/libufdt 2>/dev/null || {
+              echo "⚠️ Não foi possível obter ufdt_apply_overlay"
+              exit 0  # Não falhar o build por causa disso
+            }
+            
+            if [ -f /tmp/libufdt/src/ufdt_apply_overlay.c ]; then
+              cd /tmp/libufdt/src
+              gcc -o ufdt_apply_overlay ufdt_apply_overlay.c -I../include 2>/dev/null && {
+                sudo cp ufdt_apply_overlay /usr/local/bin/
+                sudo chmod +x /usr/local/bin/ufdt_apply_overlay
+                echo "✅ ufdt_apply_overlay compilado e instalado"
+              } || echo "⚠️ Falha na compilação do ufdt_apply_overlay"
+            fi
+          fi
+          
+          which ufdt_apply_overlay 2>/dev/null || echo "⚠️ ufdt_apply_overlay não disponível"
 
-    # ===============================
-    # UFDT (DTBO OVERLAY TOOL)
-    # ===============================
-    - name: Install ufdt_apply_overlay (AOSP prebuilt)
-      run: |
-        set -e
-        echo "📥 Clonando prebuilts do AOSP"
-        git clone https://android.googlesource.com/platform/prebuilts/misc prebuilts-misc
+      # ===============================
+      # CLANG AOSP (r416183b)
+      # ===============================
+      - name: Cache Clang Toolchain
+        id: cache-clang
+        uses: actions/cache@v4
+        with:
+          path: kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b
+          key: clang-r416183b-v1-${{ runner.os }}
 
-        UFDT_BIN=$(find prebuilts-misc -type f -name ufdt_apply_overlay | head -n 1)
-        if [ -z "$UFDT_BIN" ]; then
-          echo "❌ ufdt_apply_overlay não encontrado nos prebuilts"
-          exit 1
-        fi
+      - name: Download and Configure Clang Toolchain
+        if: steps.cache-clang.outputs.cache-hit != 'true'
+        run: |
+          TOOLCHAIN_DIR="kernel_platform/prebuilts-master/clang/host/linux-x86"
+          CLANG_TAR="clang-r416183b.tar.gz"
+          CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12L-gsi/clang-r416183b.tar.gz"
+          
+          echo "📥 Baixando Clang de: $CLANG_URL"
+          mkdir -p "$TOOLCHAIN_DIR"
+          cd "$TOOLCHAIN_DIR"
+          
+          wget -q --show-progress --timeout=300 "$CLANG_URL" -O "$CLANG_TAR" || {
+            echo "❌ Falha no download do Clang"
+            exit 1
+          }
+          
+          echo "📦 Extraindo Clang..."
+          mkdir -p clang-r416183b
+          tar -C clang-r416183b -xzf "$CLANG_TAR" || {
+            echo "❌ Falha na extração do Clang"
+            exit 1
+          }
+          rm -f "$CLANG_TAR"
+          
+          echo "✅ Clang instalado em: $(pwd)/clang-r416183b"
+          ls -la clang-r416183b/bin/clang
 
-        echo "✅ ufdt_apply_overlay encontrado em: $UFDT_BIN"
-        sudo cp "$UFDT_BIN" /usr/local/bin/ufdt_apply_overlay
-        sudo chmod +x /usr/local/bin/ufdt_apply_overlay
+      - name: Verify Clang Installation
+        run: |
+          CLANG_BIN="kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin"
+          if [ ! -f "$CLANG_BIN/clang" ]; then
+            echo "❌ Clang não encontrado"
+            exit 1
+          fi
+          echo "✅ Clang verificado:"
+          "$CLANG_BIN/clang" --version | head -1
 
-        which ufdt_apply_overlay
-        ufdt_apply_overlay --help || true
+      # ===============================
+      # PREPARAÇÃO DO AMBIENTE
+      # ===============================
+      - name: Prepare Build Script
+        run: |
+          set -e
+          
+          # Verificar estrutura do projeto
+          if [ ! -d "kernel_platform" ]; then
+            echo "❌ Pasta kernel_platform não encontrada"
+            exit 1
+          fi
+          
+          if [ ! -f "build_kernel_GKI.sh" ]; then
+            echo "❌ Script build_kernel_GKI.sh não encontrado"
+            exit 1
+          fi
+          
+          # Criar script de build
+          cat > my_build.sh << 'BUILDSCRIPT'
+          #!/bin/bash
+          set -e
 
-    # ===============================
-    # CLANG AOSP (r416183b)
-    # ===============================
-    - name: Download and Configure Clang Toolchain (r416183b)
-      run: |
-        TOOLCHAIN_DIR="kernel_platform/prebuilts-master/clang/host/linux-x86"
-        CLANG_TAR="clang-r416183b.tar.gz"
-        CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12L-gsi/clang-r416183b.tar.gz"
-        
-        echo "📥 Downloading Clang from: $CLANG_URL"
-        mkdir -p $TOOLCHAIN_DIR
-        cd $TOOLCHAIN_DIR
-        
-        wget $CLANG_URL -O $CLANG_TAR
-        mkdir clang-r416183b
-        tar -C clang-r416183b -xzf $CLANG_TAR
-        rm $CLANG_TAR
-        cd -
+          # Configurações críticas
+          export MAKEFLAGS="-j$(nproc --all 2>/dev/null || echo 4)"
+          export HERMETIC_TOOLCHAIN=0
 
-    # ===============================
-    # PREPARAÇÃO DO AMBIENTE
-    # ===============================
-    - name: Prepare Environment and Fix Build Paths
-      run: |
-        rm -rf kernel_platform/build/build-tools/path/linux-x86
-        
-        cat <<EOF > my_build.sh
-        #!/bin/bash
-        set -e
+          # Clang AOSP
+          export CLANG_PREBUILT_BIN="kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin"
 
-        # 🔥 CRÍTICO PARA NÃO MORRER NO LTO
-        export MAKEFLAGS="-j4"
+          # LLVM obrigatório para GKI
+          export LLVM=1
+          export LLVM_IAS=1
+          export LD=ld.lld
 
-        # Desativar modo hermético
-        export HERMETIC_TOOLCHAIN=0
+          # PATH seguro
+          export PATH="${CLANG_PREBUILT_BIN}:/usr/bin:/bin:/usr/sbin:/sbin:${PATH}"
 
-        # Clang AOSP
-        export CLANG_PREBUILT_BIN=kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin
+          # Ferramentas explícitas
+          export CC="${CLANG_PREBUILT_BIN}/clang"
+          export CXX="${CLANG_PREBUILT_BIN}/clang++"
+          export AR="${CLANG_PREBUILT_BIN}/llvm-ar"
+          export NM="${CLANG_PREBUILT_BIN}/llvm-nm"
+          export STRIP="${CLANG_PREBUILT_BIN}/llvm-strip"
+          export OBJCOPY="${CLANG_PREBUILT_BIN}/llvm-objcopy"
+          export OBJDUMP="${CLANG_PREBUILT_BIN}/llvm-objdump"
+          export READELF="${CLANG_PREBUILT_BIN}/llvm-readelf"
+          export BISON=/usr/bin/bison
+          export FLEX=/usr/bin/flex
+          export M4=/usr/bin/m4
 
-        # LLVM obrigatório para GKI
-        export LLVM=1
-        export LLVM_IAS=1
-        export LD=ld.lld
+          echo "========================================"
+          echo "📋 Configurações do Build:"
+          echo "========================================"
+          echo "MAKEFLAGS: ${MAKEFLAGS}"
+          echo "CLANG_PREBUILT_BIN: ${CLANG_PREBUILT_BIN}"
+          echo "CC: ${CC}"
+          echo "PATH: ${PATH}"
+          echo "========================================"
 
-        # PATH seguro
-        export PATH=\$CLANG_PREBUILT_BIN:/usr/bin:/bin:/usr/sbin:/sbin:\$PATH
+          # Executar build
+          bash build_kernel_GKI.sh
+          BUILDSCRIPT
 
-        # Ferramentas explícitas
-        export BISON=/usr/bin/bison
-        export FLEX=/usr/bin/flex
-        export M4=/usr/bin/m4
+          chmod +x my_build.sh
+          echo "✅ Script de build criado"
 
-        bash build_kernel_GKI.sh
-        EOF
-        
-        chmod +x my_build.sh
+      # ===============================
+      # BUILD DO KERNEL
+      # ===============================
+      - name: Build Kernel
+        run: |
+          echo "🚀 Iniciando build do kernel..."
+          ./my_build.sh 2>&1 | tee build.log
+          BUILD_STATUS=${PIPESTATUS[0]}
+          
+          if [ $BUILD_STATUS -ne 0 ]; then
+            echo "❌ Build falhou com código de erro: $BUILD_STATUS"
+            echo "📋 Últimas 50 linhas do log:"
+            tail -50 build.log
+            exit $BUILD_STATUS
+          fi
+          
+          echo "✅ Build concluído com sucesso!"
 
-    # ===============================
-    # BUILD DO KERNEL
-    # ===============================
-    - name: Build Kernel
-      continue-on-error: true
-      run: |
-        ./my_build.sh || echo "⚠️ Build terminou com erros, mas vamos continuar para salvar arquivos"
+      # ===============================
+      # LISTAR ARQUIVOS COMPILADOS
+      # ===============================
+      - name: List Compiled Files
+        if: always()
+        run: |
+          echo "📂 Estrutura da pasta out/:"
+          find out/ -type f 2>/dev/null | head -50 || echo "⚠️ Pasta out/ não encontrada ou vazia"
+          
+          echo ""
+          echo "📂 Arquivos de imagem:"
+          find out/ -type f \( -name "Image*" -o -name "*.img" -o -name "*.dtb" \) 2>/dev/null | while read f; do
+            ls -lh "$f"
+          done
 
-    # ===============================
-    # LISTAR ARQUIVOS COMPILADOS
-    # ===============================
-    - name: List Compiled Files
-      run: |
-        echo "📄 Arquivos gerados na pasta out/:"
-        find out/ -type f
+      # ===============================
+      # COMPACTAR A PASTA OUT
+      # ===============================
+      - name: Compress Output Folder
+        if: always()
+        run: |
+          if [ -d "out/" ] && [ "$(ls -A out/ 2>/dev/null)" ]; then
+            echo "📦 Compactando pasta out/..."
+            tar -czf out.tar.gz out/
+            ls -lh out.tar.gz
+            echo "✅ Arquivo out.tar.gz criado"
+          else
+            echo "⚠️ Pasta out/ vazia ou não existe"
+            # Criar arquivo vazio para não falhar o upload
+            echo "Nenhum arquivo gerado" > out.txt
+            tar -czf out.tar.gz out.txt
+          fi
 
-    # ===============================
-    # COMPACTAR A PASTA OUT
-    # ===============================
-    - name: Compress Output Folder
-      run: |
-        echo "📦 Compactando a pasta out/ em out.tar.gz"
-        tar -czf out.tar.gz -C ./ out
-        ls -lh out.tar.gz
+      # ===============================
+      # UPLOAD DO ARTEFATO
+      # ===============================
+      - name: Upload Kernel Build Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s22-kernel-artifacts-${{ github.run_number }}
+          path: out.tar.gz
+          retention-days: 7
+          if-no-files-found: warn
 
-    # ===============================
-    # UPLOAD DO ARTEFATO
-    # ===============================
-    - name: Upload Kernel Build Artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: s22-kernel-artifacts
-        path: out.tar.gz
-        if-no-files-found: error
-        retention-days: 7
+      # ===============================
+      # UPLOAD DO LOG DE BUILD
+      # ===============================
+      - name: Upload Build Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ github.run_number }}
+          path: build.log
+          retention-days: 3
+          if-no-files-found: ignore
