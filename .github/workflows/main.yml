@@ -17,18 +17,12 @@ jobs:
     continue-on-error: false
 
     steps:
-      # ===============================
-      # CHECKOUT
-      # ===============================
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
 
-      # ===============================
-      # DEPENDÊNCIAS DO SISTEMA
-      # ===============================
       - name: Install Build Dependencies
         run: |
           sudo apt-get update
@@ -45,10 +39,7 @@ jobs:
           which flex && flex --version | head -1
           which clang && clang --version | head -1
 
-      # ===============================
-      # SWAP (CRÍTICO PARA LTO)
-      # ===============================
-      - name: Setup Swap Space (OOM fix)
+      - name: Setup Swap Space
         run: |
           echo "🧠 Configurando swap..."
           sudo swapoff -a 2>/dev/null || true
@@ -61,23 +52,17 @@ jobs:
           echo "✅ Swap configurado:"
           free -h
 
-      # ===============================
-      # CORRIGIR PATHS DE FERRAMENTAS
-      # ===============================
       - name: Fix Build Tools Paths
         run: |
           echo "🔧 Corrigindo paths de ferramentas..."
           
-          # Remover path problemático que aponta para ferramentas inexistentes
           if [ -d "kernel_platform/build/build-tools/path/linux-x86" ]; then
             rm -rf kernel_platform/build/build-tools/path/linux-x86
             echo "✅ Removido path problemático"
           fi
           
-          # Criar diretórios necessários
           mkdir -p kernel_platform/prebuilts/build-tools/linux-x86/bin
           
-          # Criar symlinks para ferramentas do sistema
           for tool in bison flex m4; do
             if command -v $tool &> /dev/null; then
               ln -sf $(which $tool) kernel_platform/prebuilts/build-tools/linux-x86/bin/$tool 2>/dev/null || true
@@ -85,72 +70,24 @@ jobs:
             fi
           done
           
-          # Verificar estrutura
           ls -la kernel_platform/prebuilts/build-tools/linux-x86/bin/ 2>/dev/null || echo "⚠️ Diretório não criado"
 
-      # ===============================
-      # INSTALAR ufdt_apply_overlay
-      # ===============================
       - name: Install ufdt_apply_overlay
         run: |
           echo "📦 Instalando ufdt_apply_overlay..."
           
-          cd /tmp
-          rm -rf libufdt 2>/dev/null || true
-          
-          # Clonar libufdt do Android
-          git clone --depth=1 https://github.com/aosp-mirror/platform_system_libufdt libufdt
-          
-          cd libufdt
-          
-          # Verificar estrutura e encontrar arquivo fonte
-          echo "📂 Procurando ufdt_apply_overlay.c..."
-          find . -name "ufdt_apply_overlay.c" 2>/dev/null
-          
-          # O arquivo está em tests/ ou src/ dependendo da versão
-          if [ -f "tests/ufdt_apply_overlay.c" ]; then
-            SRC_DIR="tests"
-            INC_DIR="include"
-          elif [ -f "src/ufdt_apply_overlay.c" ]; then
-            SRC_DIR="src"
-            INC_DIR="include"
+          # fdtoverlay já vem com device-tree-compiler
+          if command -v fdtoverlay > /dev/null 2>&1; then
+            echo "✅ fdtoverlay encontrado, criando symlink..."
+            sudo ln -sf $(which fdtoverlay) /usr/local/bin/ufdt_apply_overlay
           else
-            # Buscar em todo o repo
-            SRC_PATH=$(find . -name "ufdt_apply_overlay.c" | head -1)
-            if [ -z "$SRC_PATH" ]; then
-              echo "❌ ufdt_apply_overlay.c não encontrado"
-              exit 1
-            fi
-            SRC_DIR=$(dirname "$SRC_PATH")
-            INC_DIR="include"
+            echo "❌ fdtoverlay não encontrado"
+            exit 1
           fi
           
-          echo "📁 Compilando de: $SRC_DIR"
-          cd "$SRC_DIR"
-          
-          # Compilar manualmente
-          echo "🔧 Compilando..."
-          clang -o ufdt_apply_overlay ufdt_apply_overlay.c \
-            -I../${INC_DIR} -I/usr/include \
-            -L/usr/lib/x86_64-linux-gnu \
-            -lfdt 2>/dev/null || \
-          gcc -o ufdt_apply_overlay ufdt_apply_overlay.c \
-            -I../${INC_DIR} -I/usr/include \
-            -L/usr/lib/x86_64-linux-gnu \
-            -lfdt
-          
-          # Instalar no PATH
-          sudo cp ufdt_apply_overlay /usr/local/bin/
-          sudo chmod +x /usr/local/bin/ufdt_apply_overlay
-          
-          # Verificar
-          echo "✅ ufdt_apply_overlay instalado:"
           which ufdt_apply_overlay
           ufdt_apply_overlay --help 2>&1 | head -3 || true
 
-      # ===============================
-      # CORRIGIR DEFCONFIG (DOUBLE UNDERSCORE)
-      # ===============================
       - name: Fix Double Underscore Defconfig
         run: |
           echo "🔧 Corrigindo nome do defconfig..."
@@ -160,7 +97,6 @@ jobs:
           if [ -f "$CONFIG_DIR/waipio_sec_defconfig" ]; then
             cd "$CONFIG_DIR"
             
-            # Criar symlink se o arquivo com __ não existe
             if [ ! -f "waipio_sec__defconfig" ]; then
               ln -s waipio_sec_defconfig waipio_sec__defconfig
               echo "✅ Symlink criado: waipio_sec__defconfig -> waipio_sec_defconfig"
@@ -169,13 +105,10 @@ jobs:
             echo "📋 Defconfigs disponíveis:"
             ls -la waipio_sec*defconfig
           else
-            echo "⚠️ waipio_sec_defconfig não encontrado em $CONFIG_DIR"
+            echo "⚠️ waipio_sec_defconfig não encontrado"
             find kernel_platform -name "*waipio*defconfig" 2>/dev/null || true
           fi
 
-      # ===============================
-      # CLANG AOSP (r416183b)
-      # ===============================
       - name: Cache Clang Toolchain
         id: cache-clang
         uses: actions/cache@v4
@@ -220,14 +153,10 @@ jobs:
           echo "✅ Clang verificado:"
           "$CLANG_BIN/clang" --version | head -1
 
-      # ===============================
-      # PREPARAÇÃO DO AMBIENTE
-      # ===============================
       - name: Prepare Build Script
         run: |
           set -e
           
-          # Verificar estrutura do projeto
           if [ ! -d "kernel_platform" ]; then
             echo "❌ Pasta kernel_platform não encontrada"
             exit 1
@@ -238,33 +167,26 @@ jobs:
             exit 1
           fi
           
-          # Criar script de build
           cat > my_build.sh << 'BUILDSCRIPT'
           #!/bin/bash
           set -e
 
-          # Configurações críticas
           export MAKEFLAGS="-j$(nproc --all 2>/dev/null || echo 4)"
           export HERMETIC_TOOLCHAIN=0
 
-          # Clang AOSP
           export CLANG_PREBUILT_BIN="kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin"
 
-          # LLVM obrigatório para GKI
           export LLVM=1
           export LLVM_IAS=1
           export LD=ld.lld
 
-          # PATH seguro - ferramentas do sistema primeiro
           export PATH="/usr/bin:/bin:/usr/sbin:/sbin:${CLANG_PREBUILT_BIN}:${PATH}"
 
-          # Ferramentas explícitas do sistema
           export BISON=/usr/bin/bison
           export FLEX=/usr/bin/flex
           export M4=/usr/bin/m4
           export DTC=/usr/bin/dtc
 
-          # Variáveis LLVM completas
           export CC="${CLANG_PREBUILT_BIN}/clang"
           export CXX="${CLANG_PREBUILT_BIN}/clang++"
           export AR="${CLANG_PREBUILT_BIN}/llvm-ar"
@@ -276,7 +198,6 @@ jobs:
           export HOSTCC="${CLANG_PREBUILT_BIN}/clang"
           export HOSTCXX="${CLANG_PREBUILT_BIN}/clang++"
 
-          # Desativar paths problemáticos
           export SKIP_MRPROPER=1
 
           echo "========================================"
@@ -285,27 +206,20 @@ jobs:
           echo "MAKEFLAGS: ${MAKEFLAGS}"
           echo "CLANG_PREBUILT_BIN: ${CLANG_PREBUILT_BIN}"
           echo "CC: ${CC}"
-          echo "BISON: ${BISON}"
-          echo "FLEX: ${FLEX}"
           echo "PATH: ${PATH}"
           echo "========================================"
 
-          # Verificar ferramentas
           echo "🔎 Verificando ferramentas:"
           which bison && bison --version | head -1
           which flex && flex --version | head -1
           which ufdt_apply_overlay && echo "✅ ufdt_apply_overlay disponível"
 
-          # Executar build
           bash build_kernel_GKI.sh
           BUILDSCRIPT
 
           chmod +x my_build.sh
           echo "✅ Script de build criado"
 
-      # ===============================
-      # BUILD DO KERNEL
-      # ===============================
       - name: Build Kernel
         run: |
           echo "🚀 Iniciando build do kernel..."
@@ -321,14 +235,11 @@ jobs:
           
           echo "✅ Build concluído com sucesso!"
 
-      # ===============================
-      # LISTAR ARQUIVOS COMPILADOS
-      # ===============================
       - name: List Compiled Files
         if: always()
         run: |
           echo "📂 Estrutura da pasta out/:"
-          find out/ -type f 2>/dev/null | head -50 || echo "⚠️ Pasta out/ não encontrada ou vazia"
+          find out/ -type f 2>/dev/null | head -50 || echo "⚠️ Pasta out/ não encontrada"
           
           echo ""
           echo "📂 Arquivos de imagem:"
@@ -336,9 +247,6 @@ jobs:
             ls -lh "$f"
           done
 
-      # ===============================
-      # COMPACTAR A PASTA OUT
-      # ===============================
       - name: Compress Output Folder
         if: always()
         run: |
@@ -353,9 +261,6 @@ jobs:
             tar -czf out.tar.gz out.txt
           fi
 
-      # ===============================
-      # UPLOAD DO ARTEFATO
-      # ===============================
       - name: Upload Kernel Build Artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -365,9 +270,6 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
-      # ===============================
-      # UPLOAD DO LOG DE BUILD
-      # ===============================
       - name: Upload Build Log
         if: always()
         uses: actions/upload-artifact@v4
