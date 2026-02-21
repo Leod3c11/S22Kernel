@@ -42,11 +42,24 @@ make -C $KERNEL_DIR O=$OUT_DIR \
     LD=ld.lld \
     $DEFCONFIG_BASE
 
-# 6. Personalização (descomente e ajuste conforme necessário)
-# scripts/config --file $OUT_DIR/.config --enable CONFIG_LOCALVERSION_AUTO
-# scripts/config --file $OUT_DIR/.config --set-str CONFIG_LOCALVERSION "-Custom-NonGKI"
+# 6. Forçar CONFIG_SECURITY habilitado (necessário para patch KDP da Samsung)
+echo "Aplicando configurações obrigatórias..."
+$KERNEL_DIR/scripts/config --file $OUT_DIR/.config --enable CONFIG_SECURITY
+$KERNEL_DIR/scripts/config --file $OUT_DIR/.config --enable CONFIG_SECURITY_SELINUX
 
-# 7. Compilar
+# Resolver dependências geradas pela mudança de config
+make -C $KERNEL_DIR O=$OUT_DIR \
+    ARCH=arm64 \
+    CROSS_COMPILE=aarch64-linux-gnu- \
+    CC=clang \
+    LD=ld.lld \
+    olddefconfig
+
+# 7. Personalização (descomente e ajuste conforme necessário)
+# $KERNEL_DIR/scripts/config --file $OUT_DIR/.config --enable CONFIG_LOCALVERSION_AUTO
+# $KERNEL_DIR/scripts/config --file $OUT_DIR/.config --set-str CONFIG_LOCALVERSION "-Custom-NonGKI"
+
+# 8. Compilar
 CPU_CORES=$(nproc)
 echo "Compilando com $CPU_CORES núcleos..."
 
@@ -64,7 +77,7 @@ make -C $KERNEL_DIR O=$OUT_DIR -j$CPU_CORES \
     LLVM=1 \
     LLVM_IAS=1
 
-# 8. Finalização
+# 9. Finalização
 if [ -f $OUT_DIR/arch/arm64/boot/Image ]; then
     echo "--- Compilação concluída com sucesso! ---"
     echo "Kernel Image: $OUT_DIR/arch/arm64/boot/Image"
