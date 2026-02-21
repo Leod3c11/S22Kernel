@@ -30,7 +30,6 @@ on:
 
 env:
   MSM_ARCH: waipio
-  BUILD_CONFIG: kernel_platform/msm-kernel/build.config.msm.waipio
   CLANG_VERSION: clang-r416183b
   CLANG_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12L-gsi/clang-r416183b.tar.gz
 
@@ -59,7 +58,6 @@ jobs:
           echo "========================================"
           echo "MSM_ARCH: ${{ env.MSM_ARCH }}"
           echo "VARIANT: ${{ matrix.variant }}"
-          echo "BUILD_CONFIG: ${{ env.BUILD_CONFIG }}"
           echo "========================================"
 
       - name: Install Build Dependencies
@@ -74,9 +72,6 @@ jobs:
             lz4 ccache kmod e2fsprogs python3 \
             libfdt-dev git libyaml-dev \
             python3-pip ninja-build
-
-          # Instalar avbtool para assinatura de imagens
-          pip3 install avb
 
           echo "🔎 Verificando ferramentas instaladas:"
           which bison && bison --version | head -1
@@ -105,7 +100,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: kernel_platform/prebuilts-master/clang/host/linux-x86/${{ env.CLANG_VERSION }}
-          key: ${{ env.CLANG_VERSION }}-${{ runner.os }}-${{ hashFiles('**/build.config.msm.waipio') }}
+          key: ${{ env.CLANG_VERSION }}-${{ runner.os }}-v1
           restore-keys: |
             ${{ env.CLANG_VERSION }}-${{ runner.os }}-
 
@@ -189,16 +184,17 @@ jobs:
           fi
 
       - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.2
-        with:
-          key: waipio-${{ matrix.variant }}
-          max-size: 5G
+        run: |
+          echo "🔧 Configurando ccache..."
+          ccache --max-size=5G
+          ccache --zero-stats
+          ccache -s
 
       - name: Prepare Build Environment Variables
         run: |
           echo "🔧 Configurando variáveis de ambiente..."
 
-          CLANG_BIN="${{ github.workspace }}/kernel_platform/prebuilts-master/clang/host/linux-x86/${{ env.CLANG_VERSION }}/bin"
+          CLANG_BIN="${GITHUB_WORKSPACE}/kernel_platform/prebuilts-master/clang/host/linux-x86/${CLANG_VERSION}/bin"
 
           # Exportar variáveis para steps seguintes
           echo "CLANG_BIN=$CLANG_BIN" >> $GITHUB_ENV
@@ -229,7 +225,7 @@ jobs:
           echo "MODULES_LIST_ORDER=1" >> $GITHUB_ENV
 
           # Definir se é build limpo
-          if [ "${{ github.event.inputs.clean_build }}" == "true" ]; then
+          if [ "${{ inputs.clean_build }}" == "true" ]; then
             echo "SKIP_MRPROPER=0" >> $GITHUB_ENV
           else
             echo "SKIP_MRPROPER=1" >> $GITHUB_ENV
@@ -243,10 +239,11 @@ jobs:
           echo "📋 Verificação do ambiente"
           echo "========================================"
           echo "Clang:"
-          ${{ env.CLANG_BIN }}/clang --version | head -1
+          $CLANG_BIN/clang --version | head -1
           echo ""
           echo "ccache:"
           ccache --version | head -1
+          ccache -s
           echo ""
           echo "Ferramentas:"
           which bison && bison --version | head -1
@@ -255,35 +252,55 @@ jobs:
           which ufdt_apply_overlay && echo "✅ ufdt_apply_overlay disponível"
           echo ""
           echo "Configurações:"
-          echo "VARIANT: ${{ env.VARIANT }}"
-          echo "BUILD_VENDOR_DLKM: ${{ env.BUILD_VENDOR_DLKM }}"
-          echo "DT_OVERLAY_SUPPORT: ${{ env.DT_OVERLAY_SUPPORT }}"
+          echo "VARIANT: $VARIANT"
+          echo "BUILD_VENDOR_DLKM: $BUILD_VENDOR_DLKM"
+          echo "DT_OVERLAY_SUPPORT: $DT_OVERLAY_SUPPORT"
 
       - name: Build Kernel
         run: |
-          echo "🚀 Iniciando build do kernel Waipio (${{ matrix.variant }})..."
+          echo "🚀 Iniciando build do kernel Waipio ($VARIANT)..."
           echo "========================================"
 
           # Definir diretório de saída
-          export OUT_DIR="${{ github.workspace }}/out/msm-waipio-${{ matrix.variant }}"
+          export OUT_DIR="${GITHUB_WORKSPACE}/out/msm-waipio-$VARIANT"
           mkdir -p "$OUT_DIR"
 
           # Configurar ambiente para o build
-          export ROOT_DIR="${{ github.workspace }}/kernel_platform"
+          export ROOT_DIR="${GITHUB_WORKSPACE}/kernel_platform"
           export KERNEL_DIR="msm-kernel"
           export COMMON_OUT_DIR="$OUT_DIR"
+          export BUILD_CONFIG="kernel_platform/msm-kernel/build.config.msm.waipio"
+
+          cd "${GITHUB_WORKSPACE}"
+
+          # Verificar se o build.config existe
+          if [ ! -f "$BUILD_CONFIG" ]; then
+            echo "❌ Arquivo de configuração não encontrado: $BUILD_CONFIG"
+            exit 1
+          fi
 
           # Executar build usando o script de configuração
-          cd "${{ github.workspace }}"
-
           # Build com timeout de 3 horas
           timeout 10800 bash -c "
-            export VARIANT=${{ matrix.variant }}
-            export BUILD_CONFIG=${{ env.BUILD_CONFIG }}
-            source ${{ env.BUILD_CONFIG }}
-            make_defconfig
-            make_kernel
-          " 2>&1 | tee "build_${{ matrix.variant }}.log" || {
+            set -e
+            export VARIANT=$VARIANT
+            export BUILD_CONFIG=kernel_platform/msm-kernel/build.config.msm.waipio
+            source kernel_platform/msm-kernel/build.config.msm.waipio
+            
+            # Executar funções do build.config se existirem
+            if type make_defconfig &>/dev/null; then
+              echo 'Executando make_defconfig...'
+              make_defconfig
+            fi
+            
+            if type make_kernel &>/dev/null; then
+              echo 'Executando make_kernel...'
+              make_kernel
+            else
+              echo 'Função make_kernel não encontrada, usando make direto...'
+              make -C kernel_platform/msm-kernel O=\$OUT_DIR -j\$(nproc)
+            fi
+          " 2>&1 | tee "build_$VARIANT.log" || {
             EXIT_CODE=$?
             if [ $EXIT_CODE -eq 124 ]; then
               echo "❌ Build cancelado por timeout (3 horas)"
@@ -300,17 +317,16 @@ jobs:
         run: |
           echo "📦 Construindo vendor_dlkm..."
 
-          export OUT_DIR="${{ github.workspace }}/out/msm-waipio-${{ matrix.variant }}"
-          export ROOT_DIR="${{ github.workspace }}/kernel_platform"
+          export OUT_DIR="${GITHUB_WORKSPACE}/out/msm-waipio-$VARIANT"
+          export ROOT_DIR="${GITHUB_WORKSPACE}/kernel_platform"
           export KERNEL_DIR="msm-kernel"
 
-          # Construir módulos do vendor
-          cd "${{ github.workspace }}"
+          cd "${GITHUB_WORKSPACE}"
 
           # Verificar se há módulos para empacotar
           if [ -f "kernel_platform/msm-kernel/modules.list.msm.waipio" ]; then
             echo "📋 Usando lista de módulos: modules.list.msm.waipio"
-            cat kernel_platform/msm-kernel/modules.list.msm.waipio | head -20
+            head -20 kernel_platform/msm-kernel/modules.list.msm.waipio
             echo "... (total: $(wc -l < kernel_platform/msm-kernel/modules.list.msm.waipio) módulos)"
           fi
 
@@ -322,7 +338,7 @@ jobs:
           echo "📂 Listando arquivos de saída..."
           echo "========================================"
 
-          OUT_DIR="${{ github.workspace }}/out"
+          OUT_DIR="${GITHUB_WORKSPACE}/out"
 
           if [ -d "$OUT_DIR" ]; then
             echo "📁 Estrutura do diretório out/:"
@@ -356,8 +372,8 @@ jobs:
           echo "📦 Criando pacote de release..."
 
           VARIANT="${{ matrix.variant }}"
-          OUT_DIR="${{ github.workspace }}/out"
-          RELEASE_DIR="${{ github.workspace }}/release/waipio-${VARIANT}"
+          OUT_DIR="${GITHUB_WORKSPACE}/out"
+          RELEASE_DIR="${GITHUB_WORKSPACE}/release/waipio-${VARIANT}"
 
           mkdir -p "$RELEASE_DIR"
 
@@ -378,19 +394,19 @@ jobs:
 
           # Criar info do build
           cat > "$RELEASE_DIR/build_info.txt" << EOF
-Waipio Kernel Build Info
-========================
-Build Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-Variant: ${VARIANT}
-MSM_ARCH: waipio
-Clang Version: ${{ env.CLANG_VERSION }}
-Git Commit: ${{ github.sha }}
-Git Branch: ${{ github.ref_name }}
-Build URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-EOF
+          Waipio Kernel Build Info
+          ========================
+          Build Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          Variant: ${VARIANT}
+          MSM_ARCH: waipio
+          Clang Version: ${{ env.CLANG_VERSION }}
+          Git Commit: ${{ github.sha }}
+          Git Branch: ${{ github.ref_name }}
+          Build URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EOF
 
           # Compactar
-          cd "${{ github.workspace }}/release"
+          cd "${GITHUB_WORKSPACE}/release"
           tar -czf "waipio-${VARIANT}.tar.gz" "waipio-${VARIANT}"
           ls -lh "waipio-${VARIANT}.tar.gz"
 
@@ -420,7 +436,6 @@ EOF
           retention-days: 14
           if-no-files-found: warn
 
-  # Job para criar release quando ambas as variantes terminarem com sucesso
   create-release:
     needs: build-waipio
     runs-on: ubuntu-24.04
