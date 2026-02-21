@@ -64,95 +64,172 @@ jobs:
         uses: actions/cache@v4
         with:
           path: kernel_platform/prebuilts-master/clang/host/linux-x86/${{ env.CLANG_VERSION }}
-          key: clang-${{ env.CLANG_VERSION }}-${{ runner.os }}-v2
+          key: clang-${{ env.CLANG_VERSION }}-${{ runner.os }}
 
       - name: Download Clang
         if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
           mkdir -p kernel_platform/prebuilts-master/clang/host/linux-x86
           cd kernel_platform/prebuilts-master/clang/host/linux-x86
-          wget -q --show-progress --timeout=300 "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12L-gsi/${{ env.CLANG_VERSION }}.tar.gz" -O clang.tar.gz
+          wget -q --show-progress "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12L-gsi/${{ env.CLANG_VERSION }}.tar.gz" -O clang.tar.gz
           mkdir -p ${{ env.CLANG_VERSION }}
           tar -C ${{ env.CLANG_VERSION }} -xzf clang.tar.gz
           rm clang.tar.gz
-          echo "✅ Clang instalado"
-          ls -la ${{ env.CLANG_VERSION }}/bin/clang
 
-      - name: Setup Build Tools
+      - name: Setup Tools
         run: |
-          echo "🔧 Configurando ferramentas de build..."
-          
-          # Remover paths problemáticos
-          if [ -d "kernel_platform/build/build-tools/path/linux-x86" ]; then
-            rm -rf kernel_platform/build/build-tools/path/linux-x86
-          fi
-          
-          # Criar diretório para ferramentas
           mkdir -p kernel_platform/prebuilts/build-tools/linux-x86/bin
-          
-          # Criar symlinks
           for tool in bison flex m4 dtc; do
-            if command -v $tool &> /dev/null; then
-              ln -sf $(which $tool) kernel_platform/prebuilts/build-tools/linux-x86/bin/$tool 2>/dev/null || true
-              echo "✅ $tool linkado"
-            fi
+            ln -sf $(which $tool) kernel_platform/prebuilts/build-tools/linux-x86/bin/$tool 2>/dev/null || true
           done
-          
-          # ufdt_apply_overlay
-          if command -v fdtoverlay > /dev/null 2>&1; then
-            sudo ln -sf $(which fdtoverlay) /usr/local/bin/ufdt_apply_overlay
-            echo "✅ ufdt_apply_overlay criado"
-          fi
+          sudo ln -sf $(which fdtoverlay) /usr/local/bin/ufdt_apply_overlay 2>/dev/null || true
 
       - name: Fix Defconfigs
         run: |
-          echo "🔧 Corrigindo defconfigs..."
           cd kernel_platform/msm-kernel/arch/arm64/configs/vendor 2>/dev/null || exit 0
-          
           for cfg in waipio_sec_defconfig waipio_gki_defconfig; do
-            if [ -f "$cfg" ]; then
-              double_underscore="${cfg/_defconfig/__defconfig}"
-              if [ ! -f "$double_underscore" ]; then
-                ln -sf "$cfg" "$double_underscore"
-                echo "✅ $double_underscore -> $cfg"
-              fi
+            [ -f "$cfg" ] && ln -sf "$cfg" "${cfg/_defconfig/__defconfig}" 2>/dev/null || true
+          done
+
+      - name: Build
+        run: |
+          export ROOT_DIR="${GITHUB_WORKSPACE}/kernel_platform"
+          export KERNEL_DIR="msm-kernel"
+          export VARIANT=${{ matrix.variant }}
+          export CLANG_PREBUILT_BIN="${GITHUB_WORKSPACE}/kernel_platform/prebuilts-master/clang/host/linux-x86/${CLANG_VERSION}/bin"
+          export PATH="$CLANG_PREBUILT_BIN:$PATH"
+          export LLVM=1
+          export LLVM_IAS=1
+          export CC="$CLANG_PREBUILT_BIN/clang"
+          
+          if [ "${{ inputs.clean_build }}" == "true" ]; then
+            export SKIP_MRPROPER=0
+          else
+            export SKIP_MRPROPER=1
+          fi
+
+          chmod +x build_kernel_GKI.sh
+          ./build_kernel_GKI.sh 2>&1 | tee build_${{ matrix.variant }}.log
+
+      - name: List Outputs
+        if: always()
+        run: |
+          echo "=== Arquivos gerados ==="
+          find out -type f \( -name "Image*" -o -name "*.dtb" -o -name "*.img" \) 2>/dev/null | head -20
+          find out -name "*.ko" 2>/dev/null | wc -l | xargs echo "Módulos:"
+
+      - name: Package
+        if: always()
+        run: |
+          mkdir -p release
+          if [ -d "out" ]; then
+            tar -czf release/waipio-${{ matrix.variant }}.tar.gz out/ 2>/dev/null || echo "Nada para empacotar"
+          fi
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: waipio-${{ matrix.variant }}-${{ github.run_number }}
+          path: |
+            release/*.tar.gz
+            build_*.log
+          if-no-files-found: ignore
+m/build/build-tools/path/linux-x86
+            echo "✅ Removido path problemático"
+          fi
+
+          # Criar diretório para ferramentas
+          mkdir -p kernel_platform/prebuilts/build-tools/linux-x86/bin
+
+          # Criar symlinks para ferramentas do sistema
+          for tool in bison flex m4 dtc; do
+            if command -v $tool &> /dev/null; then
+              ln -sf $(which $tool) kernel_platform/prebuilts/build-tools/linux-x86/bin/$tool 2>/dev/null || true
+              echo "  ✅ $tool -> $(which $tool)"
             fi
           done
-          
-          ls -la *waipio*defconfig 2>/dev/null || echo "⚠️ Nenhum defconfig waipio encontrado"
 
-      - name: Setup Build Environment
+          # ufdt_apply_overlay
+          if command -v fdtoverlay > /dev/null 2>&1; then
+            sudo ln -sf $(which fdtoverlay) /usr/local/bin/ufdt_apply_overlay
+            echo "  ✅ ufdt_apply_overlay -> fdtoverlay"
+          fi
+
+          ls -la kernel_platform/prebuilts/build-tools/linux-x86/bin/
+
+      - name: Fix Defconfig Files
+        run: |
+          echo "🔧 Corrigindo defconfigs..."
+
+          CONFIG_DIR="kernel_platform/msm-kernel/arch/arm64/configs/vendor"
+
+          if [ -d "$CONFIG_DIR" ]; then
+            cd "$CONFIG_DIR"
+
+            # Criar symlinks para defconfigs waipio
+            for defconfig in waipio_sec_defconfig waipio_gki_defconfig; do
+              if [ -f "$defconfig" ]; then
+                double_underscore="${defconfig/_defconfig/__defconfig}"
+                if [ ! -f "$double_underscore" ]; then
+                  ln -sf "$defconfig" "$double_underscore"
+                  echo "  ✅ Symlink: $double_underscore -> $defconfig"
+                fi
+              fi
+            done
+
+            echo "📋 Defconfigs disponíveis:"
+            ls -la *waipio*defconfig 2>/dev/null || echo "⚠️ Nenhum defconfig waipio encontrado"
+          fi
+
+      - name: Setup ccache
+        run: |
+          echo "🔧 Configurando ccache..."
+          ccache --max-size=5G
+          ccache --zero-stats
+          ccache -s
+
+      - name: Prepare Build Environment Variables
         run: |
           echo "🔧 Configurando variáveis de ambiente..."
-          
-          # Configurar paths
-          echo "ROOT_DIR=${GITHUB_WORKSPACE}/kernel_platform" >> $GITHUB_ENV
-          echo "KERNEL_DIR=msm-kernel" >> $GITHUB_ENV
-          echo "COMMON_OUT_DIR=${GITHUB_WORKSPACE}/out" >> $GITHUB_ENV
-          echo "OUT_DIR=${GITHUB_WORKSPACE}/out" >> $GITHUB_ENV
-          
-          # Configurar Clang
+
           CLANG_BIN="${GITHUB_WORKSPACE}/kernel_platform/prebuilts-master/clang/host/linux-x86/${CLANG_VERSION}/bin"
-          echo "CLANG_PREBUILT_BIN=$CLANG_BIN" >> $GITHUB_ENV
-          echo "PATH=$CLANG_BIN:$PATH" >> $GITHUB_ENV
-          
-          # Configurar variáveis do build
-          echo "VARIANT=${{ matrix.variant }}" >> $GITHUB_ENV
-          echo "MSM_ARCH=waipio" >> $GITHUB_ENV
+
+          # Exportar variáveis para steps seguintes
+          echo "CLANG_BIN=$CLANG_BIN" >> $GITHUB_ENV
+          echo "PATH=$CLANG_BIN:/usr/lib/ccache:$PATH" >> $GITHUB_ENV
+
+          # Variáveis do build
+          echo "MAKEFLAGS=-j$(nproc --all)" >> $GITHUB_ENV
+          echo "HERMETIC_TOOLCHAIN=0" >> $GITHUB_ENV
           echo "LLVM=1" >> $GITHUB_ENV
           echo "LLVM_IAS=1" >> $GITHUB_ENV
-          echo "HERMETIC_TOOLCHAIN=0" >> $GITHUB_ENV
+          echo "CC=$CLANG_BIN/clang" >> $GITHUB_ENV
+          echo "CXX=$CLANG_BIN/clang++" >> $GITHUB_ENV
+          echo "AR=$CLANG_BIN/llvm-ar" >> $GITHUB_ENV
+          echo "NM=$CLANG_BIN/llvm-nm" >> $GITHUB_ENV
+          echo "STRIP=$CLANG_BIN/llvm-strip" >> $GITHUB_ENV
+          echo "OBJCOPY=$CLANG_BIN/llvm-objcopy" >> $GITHUB_ENV
+          echo "OBJDUMP=$CLANG_BIN/llvm-objdump" >> $GITHUB_ENV
+          echo "READELF=$CLANG_BIN/llvm-readelf" >> $GITHUB_ENV
+          echo "LD=ld.lld" >> $GITHUB_ENV
+          echo "HOSTCC=$CLANG_BIN/clang" >> $GITHUB_ENV
+          echo "HOSTCXX=$CLANG_BIN/clang++" >> $GITHUB_ENV
+
+          # Configurações específicas do waipio
+          echo "VARIANT=${{ matrix.variant }}" >> $GITHUB_ENV
           echo "BUILD_VENDOR_DLKM=1" >> $GITHUB_ENV
           echo "DT_OVERLAY_SUPPORT=1" >> $GITHUB_ENV
           echo "TRIM_UNUSED_MODULES=1" >> $GITHUB_ENV
-          
-          # Clean build
+          echo "MODULES_LIST_ORDER=1" >> $GITHUB_ENV
+
+          # Definir se é build limpo
           if [ "${{ inputs.clean_build }}" == "true" ]; then
             echo "SKIP_MRPROPER=0" >> $GITHUB_ENV
           else
             echo "SKIP_MRPROPER=1" >> $GITHUB_ENV
           fi
-          
+
           echo "✅ Variáveis configuradas"
 
       - name: Verify Environment
@@ -160,139 +237,238 @@ jobs:
           echo "========================================"
           echo "📋 Verificação do ambiente"
           echo "========================================"
-          echo "ROOT_DIR: $ROOT_DIR"
-          echo "KERNEL_DIR: $KERNEL_DIR"
-          echo "VARIANT: $VARIANT"
-          echo ""
           echo "Clang:"
-          $CLANG_PREBUILT_BIN/clang --version | head -1
+          $CLANG_BIN/clang --version | head -1
           echo ""
-          echo "Verificando arquivos:"
-          ls -la $ROOT_DIR/$KERNEL_DIR/build.config.msm.waipio 2>/dev/null || echo "❌ build.config.msm.waipio não encontrado"
-          ls -la $ROOT_DIR/$KERNEL_DIR/build.config.msm.common 2>/dev/null || echo "❌ build.config.msm.common não encontrado"
+          echo "ccache:"
+          ccache --version | head -1
+          ccache -s
+          echo ""
+          echo "Ferramentas:"
+          which bison && bison --version | head -1
+          which flex && flex --version | head -1
+          which dtc && dtc --version | head -1
+          which ufdt_apply_overlay && echo "✅ ufdt_apply_overlay disponível"
+          echo ""
+          echo "Configurações:"
+          echo "VARIANT: $VARIANT"
+          echo "BUILD_VENDOR_DLKM: $BUILD_VENDOR_DLKM"
+          echo "DT_OVERLAY_SUPPORT: $DT_OVERLAY_SUPPORT"
 
       - name: Build Kernel
         run: |
           echo "🚀 Iniciando build do kernel Waipio ($VARIANT)..."
           echo "========================================"
-          
-          # Criar diretório de saída
-          mkdir -p $OUT_DIR
-          
-          # Navegar para o diretório correto
-          cd $ROOT_DIR
-          
-          echo "📁 Diretório atual: $(pwd)"
-          echo "📁 ROOT_DIR: $ROOT_DIR"
-          echo "📁 KERNEL_DIR: $KERNEL_DIR"
-          echo "📁 OUT_DIR: $OUT_DIR"
-          
-          # Verificar se os arquivos de configuração existem
-          if [ ! -f "$KERNEL_DIR/build.config.msm.waipio" ]; then
-            echo "❌ Arquivo não encontrado: $KERNEL_DIR/build.config.msm.waipio"
-            echo "📁 Conteúdo do diretório:"
-            ls -la $KERNEL_DIR/ | head -20
+
+          # Definir diretório de saída
+          export OUT_DIR="${GITHUB_WORKSPACE}/out/msm-waipio-$VARIANT"
+          mkdir -p "$OUT_DIR"
+
+          # Configurar ambiente para o build
+          export ROOT_DIR="${GITHUB_WORKSPACE}/kernel_platform"
+          export KERNEL_DIR="msm-kernel"
+          export COMMON_OUT_DIR="$OUT_DIR"
+          export BUILD_CONFIG="kernel_platform/msm-kernel/build.config.msm.waipio"
+
+          cd "${GITHUB_WORKSPACE}"
+
+          # Verificar se o build.config existe
+          if [ ! -f "$BUILD_CONFIG" ]; then
+            echo "❌ Arquivo de configuração não encontrado: $BUILD_CONFIG"
             exit 1
           fi
-          
-          # Executar o build.config.msm.waipio
-          echo "📖 Sourcing build.config.msm.waipio..."
-          set -a  # Exportar todas as variáveis
-          source $KERNEL_DIR/build.config.msm.waipio
-          set +a
-          
-          echo "✅ Configuração carregada"
-          
-          # Verificar se as funções de build existem
-          if type make_defconfig &>/dev/null; then
-            echo "🔨 Executando make_defconfig..."
-            make_defconfig
-          else
-            echo "⚠️ make_defconfig não encontrado, usando make direto..."
-            make -C $KERNEL_DIR O=$OUT_DIR ARCH=arm64 ${DEFCONFIG:-waipio_sec_defconfig}
-          fi
-          
-          if type make_kernel &>/dev/null; then
-            echo "🔨 Executando make_kernel..."
-            make_kernel
-          else
-            echo "⚠️ make_kernel não encontrado, usando make direto..."
-            make -C $KERNEL_DIR O=$OUT_DIR ARCH=arm64 -j$(nproc)
-          fi
-          
-          echo "✅ Build concluído!"
-        shell: bash
-        continue-on-error: true
 
-      - name: Build with Script (Fallback)
-        if: failure()
+          # Executar build usando o script de configuração
+          # Build com timeout de 3 horas
+          timeout 10800 bash -c "
+            set -e
+            export VARIANT=$VARIANT
+            export BUILD_CONFIG=kernel_platform/msm-kernel/build.config.msm.waipio
+            source kernel_platform/msm-kernel/build.config.msm.waipio
+            
+            # Executar funções do build.config se existirem
+            if type make_defconfig &>/dev/null; then
+              echo 'Executando make_defconfig...'
+              make_defconfig
+            fi
+            
+            if type make_kernel &>/dev/null; then
+              echo 'Executando make_kernel...'
+              make_kernel
+            else
+              echo 'Função make_kernel não encontrada, usando make direto...'
+              make -C kernel_platform/msm-kernel O=\$OUT_DIR -j\$(nproc)
+            fi
+          " 2>&1 | tee "build_$VARIANT.log" || {
+            EXIT_CODE=$?
+            if [ $EXIT_CODE -eq 124 ]; then
+              echo "❌ Build cancelado por timeout (3 horas)"
+            else
+              echo "❌ Build falhou com código: $EXIT_CODE"
+            fi
+            exit $EXIT_CODE
+          }
+
+          echo "✅ Build concluído com sucesso!"
+
+      - name: Build Vendor DLKM
+        if: env.BUILD_VENDOR_DLKM == '1'
         run: |
-          echo "🔄 Tentando build com script alternativo..."
-          
-          export VARIANT=${{ matrix.variant }}
-          export CLANG_PREBUILT_BIN="${GITHUB_WORKSPACE}/kernel_platform/prebuilts-master/clang/host/linux-x86/${CLANG_VERSION}/bin"
-          export PATH="$CLANG_PREBUILT_BIN:$PATH"
-          export LLVM=1
-          export LLVM_IAS=1
-          
-          cd ${GITHUB_WORKSPACE}
-          
-          if [ -f "build_kernel_GKI.sh" ]; then
-            echo "📜 Executando build_kernel_GKI.sh..."
-            chmod +x build_kernel_GKI.sh
-            ./build_kernel_GKI.sh 2>&1 | tee build_${{ matrix.variant }}.log
-          else
-            echo "❌ Script de build não encontrado"
-            exit 1
+          echo "📦 Construindo vendor_dlkm..."
+
+          export OUT_DIR="${GITHUB_WORKSPACE}/out/msm-waipio-$VARIANT"
+          export ROOT_DIR="${GITHUB_WORKSPACE}/kernel_platform"
+          export KERNEL_DIR="msm-kernel"
+
+          cd "${GITHUB_WORKSPACE}"
+
+          # Verificar se há módulos para empacotar
+          if [ -f "kernel_platform/msm-kernel/modules.list.msm.waipio" ]; then
+            echo "📋 Usando lista de módulos: modules.list.msm.waipio"
+            head -20 kernel_platform/msm-kernel/modules.list.msm.waipio
+            echo "... (total: $(wc -l < kernel_platform/msm-kernel/modules.list.msm.waipio) módulos)"
           fi
 
-      - name: List Outputs
+          echo "✅ Vendor DLKM processado"
+
+      - name: List Build Outputs
         if: always()
         run: |
+          echo "📂 Listando arquivos de saída..."
           echo "========================================"
-          echo "📂 Arquivos gerados"
-          echo "========================================"
-          
-          if [ -d "out" ]; then
-            echo "📁 Imagens do kernel:"
-            find out -type f \( -name "Image*" -o -name "*.dtb" -o -name "*.img" -o -name "*.dtbo" \) 2>/dev/null | while read f; do
-              echo "  $(ls -lh "$f")"
-            done
-            
+
+          OUT_DIR="${GITHUB_WORKSPACE}/out"
+
+          if [ -d "$OUT_DIR" ]; then
+            echo "📁 Estrutura do diretório out/:"
+            find "$OUT_DIR" -type f 2>/dev/null | head -100
+
             echo ""
-            echo "📁 Módulos (.ko):"
-            find out -name "*.ko" 2>/dev/null | wc -l | xargs echo "  Total:"
-            
+            echo "📁 Arquivos de imagem do kernel:"
+            find "$OUT_DIR" -type f \( \
+              -name "Image" -o -name "Image.gz" -o \
+              -name "*.img" -o -name "*.dtb" -o \
+              -name "*.dtbo" -o -name "boot.img" \
+              \) 2>/dev/null | while read f; do
+              echo "  $(ls -lh "$f" | awk '{print $5, $9}')"
+            done
+
+            echo ""
+            echo "📁 Módulos do kernel (.ko):"
+            find "$OUT_DIR" -name "*.ko" 2>/dev/null | wc -l | xargs echo "  Total de módulos:"
+            find "$OUT_DIR" -name "*.ko" 2>/dev/null | head -20
+
             echo ""
             echo "📁 Tamanho total:"
-            du -sh out/ 2>/dev/null || echo "N/A"
+            du -sh "$OUT_DIR" 2>/dev/null || echo "N/A"
           else
             echo "⚠️ Diretório out/ não encontrado"
           fi
 
-      - name: Package Artifacts
-        if: always()
+      - name: Create Release Package
+        if: success()
         run: |
-          echo "📦 Empacotando artifacts..."
-          
-          mkdir -p release
-          
-          if [ -d "out" ] && [ "$(ls -A out/ 2>/dev/null)" ]; then
-            tar -czf release/waipio-${{ matrix.variant }}.tar.gz out/
-            ls -lh release/
-          else
-            echo "⚠️ Nada para empacotar"
-            echo "Nenhum arquivo gerado" > release/empty.txt
-          fi
+          echo "📦 Criando pacote de release..."
 
-      - name: Upload Artifacts
+          VARIANT="${{ matrix.variant }}"
+          OUT_DIR="${GITHUB_WORKSPACE}/out"
+          RELEASE_DIR="${GITHUB_WORKSPACE}/release/waipio-${VARIANT}"
+
+          mkdir -p "$RELEASE_DIR"
+
+          # Copiar arquivos principais
+          find "$OUT_DIR" -type f \( \
+            -name "Image" -o -name "Image.gz" -o \
+            -name "*.img" -o -name "*.dtb" -o \
+            -name "*.dtbo" \
+          \) 2>/dev/null | while read f; do
+            cp "$f" "$RELEASE_DIR/" 2>/dev/null
+          done
+
+          # Copiar módulos
+          mkdir -p "$RELEASE_DIR/modules"
+          find "$OUT_DIR" -name "*.ko" 2>/dev/null | while read f; do
+            cp "$f" "$RELEASE_DIR/modules/" 2>/dev/null
+          done
+
+          # Criar info do build
+          cat > "$RELEASE_DIR/build_info.txt" << EOF
+          Waipio Kernel Build Info
+          ========================
+          Build Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          Variant: ${VARIANT}
+          MSM_ARCH: waipio
+          Clang Version: ${{ env.CLANG_VERSION }}
+          Git Commit: ${{ github.sha }}
+          Git Branch: ${{ github.ref_name }}
+          Build URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EOF
+
+          # Compactar
+          cd "${GITHUB_WORKSPACE}/release"
+          tar -czf "waipio-${VARIANT}.tar.gz" "waipio-${VARIANT}"
+          ls -lh "waipio-${VARIANT}.tar.gz"
+
+          echo "✅ Pacote criado: waipio-${VARIANT}.tar.gz"
+
+      - name: Upload Build Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: waipio-${{ matrix.variant }}-${{ github.run_number }}
           path: |
-            release/*.tar.gz
-            release/*.txt
-            build_*.log
-          if-no-files-found: ignore
+            ${{ github.workspace }}/release/waipio-${{ matrix.variant }}.tar.gz
+            ${{ github.workspace }}/build_${{ matrix.variant }}.log
           retention-days: 14
+          if-no-files-found: warn
+
+      - name: Upload Kernel Images
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: waipio-${{ matrix.variant }}-images-${{ github.run_number }}
+          path: |
+            ${{ github.workspace }}/out/**/Image*
+            ${{ github.workspace }}/out/**/*.dtb
+            ${{ github.workspace }}/out/**/*.dtbo
+            ${{ github.workspace }}/out/**/*.img
+          retention-days: 14
+          if-no-files-found: warn
+
+  create-release:
+    needs: build-waipio
+    runs-on: ubuntu-24.04
+    if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: waipio-*-${{ github.run_number }}
+
+      - name: Create Unified Release Package
+        run: |
+          echo "📦 Criando pacote de release unificado..."
+
+          mkdir -p release
+
+          # Encontrar e combinar todos os pacotes
+          find artifacts -name "waipio-*.tar.gz" -exec cp {} release/ \;
+
+          cd release
+          ls -lh *.tar.gz
+
+          # Criar checksums
+          sha256sum *.tar.gz > SHA256SUMS.txt
+
+          echo "✅ Pacotes de release preparados"
+
+      - name: Upload Release Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: waipio-release-${{ github.run_number }}
+          path: |
+            release/*.tar.gz
+            release/SHA256SUMS.txt
+          retention-days: 30
