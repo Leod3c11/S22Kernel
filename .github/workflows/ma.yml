@@ -6,7 +6,7 @@ on:
       variant:
         description: 'Variante de build'
         required: true
-        default: 'consolidate'
+        default: 'gki'
         type: choice
         options:
           - consolidate
@@ -22,7 +22,6 @@ on:
       - main
     paths:
       - 'kernel_platform/**'
-      - 'build_kernel_GKI.sh'
 
 env:
   CLANG_VERSION: clang-r416183b
@@ -34,7 +33,7 @@ jobs:
 
     strategy:
       matrix:
-        variant: [consolidate, gki]
+        variant: [gki]
       fail-fast: false
 
     steps:
@@ -49,15 +48,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc bison flex build-essential libssl-dev \
             libncurses5-dev libelf-dev device-tree-compiler \
-            lz4 ccache python3 libfdt-dev git wget tar
+            lz4 ccache python3 libfdt-dev git wget tar rsync
 
-      - name: Setup Swap
+      - name: Setup Swap (16GB)
         run: |
           echo "🧠 Configurando swap..."
           sudo swapoff -a || true
-          if [ -f /swapfile ]; then
-            sudo rm -f /swapfile
-          fi
+          sudo rm -f /swapfile || true
           sudo fallocate -l 16G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=16384
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
@@ -76,100 +73,62 @@ jobs:
         run: |
           mkdir -p kernel_platform/prebuilts-master/clang/host/linux-x86
           cd kernel_platform/prebuilts-master/clang/host/linux-x86
-          wget -q "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12L-gsi/${{ env.CLANG_VERSION }}.tar.gz" -O clang.tar.gz
-          mkdir -p ${{ env.CLANG_VERSION }}
-          tar -C ${{ env.CLANG_VERSION }} -xzf clang.tar.gz
+          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12L-gsi/${CLANG_VERSION}.tar.gz -O clang.tar.gz
+          mkdir -p ${CLANG_VERSION}
+          tar -C ${CLANG_VERSION} -xzf clang.tar.gz
           rm clang.tar.gz
 
-      - name: Setup ccache
-        run: |
-          ccache --max-size=5G
-          ccache --zero-stats
-          ccache -s
-
-      - name: Prepare Environment
+      - name: Setup Environment
         run: |
           CLANG_BIN="${GITHUB_WORKSPACE}/kernel_platform/prebuilts-master/clang/host/linux-x86/${CLANG_VERSION}/bin"
-          echo "CLANG_BIN=$CLANG_BIN" >> $GITHUB_ENV
-          echo "PATH=$CLANG_BIN:/usr/lib/ccache:$PATH" >> $GITHUB_ENV
+          echo "PATH=$CLANG_BIN:$PATH" >> $GITHUB_ENV
           echo "LLVM=1" >> $GITHUB_ENV
           echo "LLVM_IAS=1" >> $GITHUB_ENV
-          echo "CC=$CLANG_BIN/clang" >> $GITHUB_ENV
+          echo "CC=clang" >> $GITHUB_ENV
           echo "LD=ld.lld" >> $GITHUB_ENV
-          echo "VARIANT=${{ matrix.variant }}" >> $GITHUB_ENV
+          echo "VARIANT=${{ github.event.inputs.variant || 'gki' }}" >> $GITHUB_ENV
 
-      - name: Build Kernel
+      - name: Build Kernel (ACK Correct Way)
         run: |
           echo "🚀 Building Waipio ($VARIANT)"
 
-          export OUT_DIR="${GITHUB_WORKSPACE}/out/msm-waipio-$VARIANT"
-          mkdir -p "$OUT_DIR"
-
-          export ROOT_DIR="${GITHUB_WORKSPACE}/kernel_platform"
-          export KERNEL_DIR="msm-kernel"
-          export COMMON_OUT_DIR="$OUT_DIR"
-          export BUILD_CONFIG="msm-kernel/build.config.msm.waipio"
-
           cd kernel_platform
+
+          export BUILD_CONFIG=msm-kernel/build.config.msm.waipio
+          export OUT_DIR=${GITHUB_WORKSPACE}/out/msm-waipio-$VARIANT
+          export DIST_DIR=$OUT_DIR/dist
+
+          mkdir -p "$OUT_DIR"
 
           if [ ! -f "$BUILD_CONFIG" ]; then
             echo "❌ build.config.msm.waipio não encontrado"
             exit 1
           fi
 
-          timeout 10800 bash -c "
-            set -e
-            source $BUILD_CONFIG
-            make O=\$OUT_DIR
-          " 2>&1 | tee "${GITHUB_WORKSPACE}/build_$VARIANT.log"
+          timeout 10800 ./build/build.sh 2>&1 | tee ${GITHUB_WORKSPACE}/build.log
 
-      - name: List Outputs
+      - name: Show Output Files
         if: always()
         run: |
           echo "📦 Arquivos gerados:"
-          find out -type f 2>/dev/null | head -50
+          find out -type f | head -50
 
       - name: Package
         if: success()
         run: |
-          mkdir -p release/waipio-$VARIANT
-          cp -r out release/waipio-$VARIANT/
+          mkdir -p release
+          cp -r out/msm-waipio-* release/
           cd release
-          tar -czf waipio-$VARIANT.tar.gz waipio-$VARIANT
-          ls -lh waipio-$VARIANT.tar.gz
+          tar -czf waipio-build-${{ github.run_number }}.tar.gz *
+          ls -lh
 
       - name: Upload Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: waipio-${{ matrix.variant }}-${{ github.run_number }}
+          name: waipio-build-${{ github.run_number }}
           path: |
-            release/waipio-${{ matrix.variant }}.tar.gz
-            build_${{ matrix.variant }}.log
+            release/*.tar.gz
+            build.log
           retention-days: 14
           if-no-files-found: warn
-
-  create-release:
-    needs: build
-    runs-on: ubuntu-24.04
-    if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
-
-    steps:
-      - name: Download Artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Prepare Unified Package
-        run: |
-          mkdir -p release
-          find artifacts -name "*.tar.gz" -exec cp {} release/ \;
-          cd release
-          sha256sum *.tar.gz > SHA256SUMS.txt
-
-      - name: Upload Release Bundle
-        uses: actions/upload-artifact@v4
-        with:
-          name: waipio-release-${{ github.run_number }}
-          path: release/*
-          retention-days: 30
