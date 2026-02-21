@@ -51,26 +51,17 @@ jobs:
             libncurses5-dev libelf-dev device-tree-compiler \
             lz4 ccache python3 libfdt-dev git wget tar
 
-      # ✅ SWAP CORRIGIDO AQUI
       - name: Setup Swap
         run: |
           echo "🧠 Configurando swap..."
-
-          # Desativar swap existente (GitHub runner já tem swap ativo)
           sudo swapoff -a || true
-
-          # Remover swapfile antigo se existir
           if [ -f /swapfile ]; then
             sudo rm -f /swapfile
           fi
-
-          # Criar novo swap de 16GB
           sudo fallocate -l 16G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=16384
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
-
-          echo "✅ Swap ativo:"
           free -h
 
       - name: Cache Clang
@@ -90,19 +81,6 @@ jobs:
           tar -C ${{ env.CLANG_VERSION }} -xzf clang.tar.gz
           rm clang.tar.gz
 
-      - name: Setup Tools
-        run: |
-          mkdir -p kernel_platform/prebuilts/build-tools/linux-x86/bin
-          for tool in bison flex m4 dtc; do
-            if command -v $tool &> /dev/null; then
-              ln -sf $(which $tool) kernel_platform/prebuilts/build-tools/linux-x86/bin/$tool
-            fi
-          done
-
-          if command -v fdtoverlay &> /dev/null; then
-            sudo ln -sf $(which fdtoverlay) /usr/local/bin/ufdt_apply_overlay
-          fi
-
       - name: Setup ccache
         run: |
           ccache --max-size=5G
@@ -112,23 +90,13 @@ jobs:
       - name: Prepare Environment
         run: |
           CLANG_BIN="${GITHUB_WORKSPACE}/kernel_platform/prebuilts-master/clang/host/linux-x86/${CLANG_VERSION}/bin"
-
           echo "CLANG_BIN=$CLANG_BIN" >> $GITHUB_ENV
           echo "PATH=$CLANG_BIN:/usr/lib/ccache:$PATH" >> $GITHUB_ENV
-
-          echo "MAKEFLAGS=-j$(nproc --all)" >> $GITHUB_ENV
           echo "LLVM=1" >> $GITHUB_ENV
           echo "LLVM_IAS=1" >> $GITHUB_ENV
           echo "CC=$CLANG_BIN/clang" >> $GITHUB_ENV
           echo "LD=ld.lld" >> $GITHUB_ENV
-
           echo "VARIANT=${{ matrix.variant }}" >> $GITHUB_ENV
-
-          if [ "${{ inputs.clean_build }}" == "true" ]; then
-            echo "SKIP_MRPROPER=0" >> $GITHUB_ENV
-          else
-            echo "SKIP_MRPROPER=1" >> $GITHUB_ENV
-          fi
 
       - name: Build Kernel
         run: |
@@ -140,7 +108,9 @@ jobs:
           export ROOT_DIR="${GITHUB_WORKSPACE}/kernel_platform"
           export KERNEL_DIR="msm-kernel"
           export COMMON_OUT_DIR="$OUT_DIR"
-          export BUILD_CONFIG="kernel_platform/msm-kernel/build.config.msm.waipio"
+          export BUILD_CONFIG="msm-kernel/build.config.msm.waipio"
+
+          cd kernel_platform
 
           if [ ! -f "$BUILD_CONFIG" ]; then
             echo "❌ build.config.msm.waipio não encontrado"
@@ -150,8 +120,8 @@ jobs:
           timeout 10800 bash -c "
             set -e
             source $BUILD_CONFIG
-            make -C kernel_platform/msm-kernel O=\$OUT_DIR
-          " 2>&1 | tee "build_$VARIANT.log"
+            make O=\$OUT_DIR
+          " 2>&1 | tee "${GITHUB_WORKSPACE}/build_$VARIANT.log"
 
       - name: List Outputs
         if: always()
@@ -164,7 +134,6 @@ jobs:
         run: |
           mkdir -p release/waipio-$VARIANT
           cp -r out release/waipio-$VARIANT/
-
           cd release
           tar -czf waipio-$VARIANT.tar.gz waipio-$VARIANT
           ls -lh waipio-$VARIANT.tar.gz
