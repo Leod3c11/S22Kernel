@@ -56,120 +56,267 @@ jobs:
             lz4 ccache kmod e2fsprogs python3 \
             libfdt-dev git
 
-      # 🔥 SWAP CORRIGIDO AQUI
+          echo "🔎 Verificando ferramentas:"
+          which bison && bison --version | head -1
+          which flex && flex --version | head -1
+          which clang && clang --version | head -1
+
       - name: Setup Swap Space
         run: |
           echo "🧠 Configurando swap..."
-          sudo swapoff -a || true
-          if [ -f /swapfile ]; then
-            sudo rm -f /swapfile
-          fi
-          sudo fallocate -l 20G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=20480
+          sudo swapoff -a 2>/dev/null || true
+          sudo rm -f /swapfile 2>/dev/null || true
+          sleep 1
+          sudo fallocate -l 20G /swapfile 2>/dev/null || sudo dd if=/dev/zero of=/swapfile bs=1M count=20480 status=none
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
+          echo "✅ Swap configurado:"
           free -h
 
       - name: Fix Build Tools Paths
         run: |
+          echo "🔧 Corrigindo paths de ferramentas..."
+
           if [ -d "kernel_platform/build/build-tools/path/linux-x86" ]; then
             rm -rf kernel_platform/build/build-tools/path/linux-x86
+            echo "✅ Removido path problemático"
           fi
+
           mkdir -p kernel_platform/prebuilts/build-tools/linux-x86/bin
+
           for tool in bison flex m4; do
-            ln -sf $(which $tool) kernel_platform/prebuilts/build-tools/linux-x86/bin/$tool 2>/dev/null || true
+            if command -v $tool &> /dev/null; then
+              ln -sf $(which $tool) kernel_platform/prebuilts/build-tools/linux-x86/bin/$tool 2>/dev/null || true
+              echo "  ✅ $tool -> $(which $tool)"
+            fi
           done
+
+          ls -la kernel_platform/prebuilts/build-tools/linux-x86/bin/ 2>/dev/null || echo "⚠️ Diretório não criado"
 
       - name: Install ufdt_apply_overlay
         run: |
+          echo "📦 Instalando ufdt_apply_overlay..."
+
           if command -v fdtoverlay > /dev/null 2>&1; then
+            echo "✅ fdtoverlay encontrado, criando symlink..."
             sudo ln -sf $(which fdtoverlay) /usr/local/bin/ufdt_apply_overlay
+          else
+            echo "❌ fdtoverlay não encontrado"
+            exit 1
           fi
 
-      - name: Fix Defconfig
+          which ufdt_apply_overlay
+
+      - name: Fix Double Underscore Defconfig
         run: |
-          cd kernel_platform/msm-kernel/arch/arm64/configs/vendor 2>/dev/null || exit 0
-          if [ -f "waipio_sec_defconfig" ] && [ ! -f "waipio_sec__defconfig" ]; then
-            ln -s waipio_sec_defconfig waipio_sec__defconfig
+          echo "🔧 Corrigindo nome do defconfig..."
+
+          CONFIG_DIR="kernel_platform/msm-kernel/arch/arm64/configs/vendor"
+
+          if [ -f "$CONFIG_DIR/waipio_sec_defconfig" ]; then
+            cd "$CONFIG_DIR"
+
+            if [ ! -f "waipio_sec__defconfig" ]; then
+              ln -s waipio_sec_defconfig waipio_sec__defconfig
+              echo "✅ Symlink criado: waipio_sec__defconfig -> waipio_sec_defconfig"
+            fi
+
+            echo "📋 Defconfigs disponíveis:"
+            ls -la waipio_sec*defconfig
+          else
+            echo "⚠️ waipio_sec_defconfig não encontrado"
+            find kernel_platform -name "*waipio*defconfig" 2>/dev/null || true
           fi
 
-      - name: Cache Clang
+      - name: Cache Clang Toolchain
         id: cache-clang
         uses: actions/cache@v4
         with:
           path: kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b
           key: clang-r416183b-v1-${{ runner.os }}
 
-      - name: Download Clang
+      - name: Download and Configure Clang Toolchain
         if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
-          mkdir -p kernel_platform/prebuilts-master/clang/host/linux-x86
-          cd kernel_platform/prebuilts-master/clang/host/linux-x86
-          wget -q --show-progress --timeout=300 "$CLANG_URL" -O clang.tar.gz
-          mkdir -p clang-r416183b
-          tar -C clang-r416183b -xzf clang.tar.gz
-          rm clang.tar.gz
+          TOOLCHAIN_DIR="kernel_platform/prebuilts-master/clang/host/linux-x86"
+          CLANG_TAR="clang-r416183b.tar.gz"
 
-      - name: Build Kernel
+          echo "📥 Baixando Clang de: $CLANG_URL"
+          mkdir -p "$TOOLCHAIN_DIR"
+          cd "$TOOLCHAIN_DIR"
+
+          wget -q --show-progress --timeout=300 "$CLANG_URL" -O "$CLANG_TAR" || {
+            echo "❌ Falha no download do Clang"
+            exit 1
+          }
+
+          echo "📦 Extraindo Clang..."
+          mkdir -p clang-r416183b
+          tar -C clang-r416183b -xzf "$CLANG_TAR" || {
+            echo "❌ Falha na extração do Clang"
+            exit 1
+          }
+          rm -f "$CLANG_TAR"
+
+          echo "✅ Clang instalado"
+          ls -la clang-r416183b/bin/clang
+
+      - name: Verify Clang Installation
         run: |
-          echo "🚀 Build Waipio (${{ matrix.variant }})"
+          CLANG_BIN="kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin"
+          if [ ! -f "$CLANG_BIN/clang" ]; then
+            echo "❌ Clang não encontrado"
+            exit 1
+          fi
+          echo "✅ Clang verificado:"
+          "$CLANG_BIN/clang" --version | head -1
+
+      - name: Prepare Build Script
+        run: |
+          set -e
+
+          if [ ! -d "kernel_platform" ]; then
+            echo "❌ Pasta kernel_platform não encontrada"
+            exit 1
+          fi
+
+          if [ ! -f "build_kernel_GKI.sh" ]; then
+            echo "❌ Script build_kernel_GKI.sh não encontrado"
+            exit 1
+          fi
+
+          cat > my_build.sh << 'BUILDSCRIPT'
+          #!/bin/bash
+          set -e
+
+          export MAKEFLAGS="-j$(nproc --all 2>/dev/null || echo 4)"
+          export HERMETIC_TOOLCHAIN=0
 
           export CLANG_PREBUILT_BIN="kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin"
-          export PATH="$CLANG_PREBUILT_BIN:$PATH"
 
-          export MAKEFLAGS="-j$(nproc --all)"
-          export HERMETIC_TOOLCHAIN=0
           export LLVM=1
           export LLVM_IAS=1
           export LD=ld.lld
-          export CC="$CLANG_PREBUILT_BIN/clang"
-          export CXX="$CLANG_PREBUILT_BIN/clang++"
-          export AR="$CLANG_PREBUILT_BIN/llvm-ar"
-          export NM="$CLANG_PREBUILT_BIN/llvm-nm"
-          export STRIP="$CLANG_PREBUILT_BIN/llvm-strip"
-          export OBJCOPY="$CLANG_PREBUILT_BIN/llvm-objcopy"
-          export OBJDUMP="$CLANG_PREBUILT_BIN/llvm-objdump"
-          export READELF="$CLANG_PREBUILT_BIN/llvm-readelf"
-          export HOSTCC="$CLANG_PREBUILT_BIN/clang"
-          export HOSTCXX="$CLANG_PREBUILT_BIN/clang++"
+
+          export PATH="/usr/bin:/bin:/usr/sbin:/sbin:${CLANG_PREBUILT_BIN}:${PATH}"
 
           export BISON=/usr/bin/bison
           export FLEX=/usr/bin/flex
           export M4=/usr/bin/m4
           export DTC=/usr/bin/dtc
 
+          export CC="${CLANG_PREBUILT_BIN}/clang"
+          export CXX="${CLANG_PREBUILT_BIN}/clang++"
+          export AR="${CLANG_PREBUILT_BIN}/llvm-ar"
+          export NM="${CLANG_PREBUILT_BIN}/llvm-nm"
+          export STRIP="${CLANG_PREBUILT_BIN}/llvm-strip"
+          export OBJCOPY="${CLANG_PREBUILT_BIN}/llvm-objcopy"
+          export OBJDUMP="${CLANG_PREBUILT_BIN}/llvm-objdump"
+          export READELF="${CLANG_PREBUILT_BIN}/llvm-readelf"
+          export HOSTCC="${CLANG_PREBUILT_BIN}/clang"
+          export HOSTCXX="${CLANG_PREBUILT_BIN}/clang++"
+
+          # Variante do build (consolidate ou gki)
           export VARIANT="${{ matrix.variant }}"
 
+          # Configurações para gerar todos os arquivos
+          export DT_OVERLAY_SUPPORT=1
+          export BUILD_VENDOR_DLKM=1
+          export DTB_IMG_CREATE=1
+
+          # Mrproper
           if [ "${{ inputs.clean_build }}" == "true" ]; then
             export SKIP_MRPROPER=0
           else
             export SKIP_MRPROPER=1
           fi
 
-          chmod +x build_kernel_GKI.sh
-          ./build_kernel_GKI.sh 2>&1 | tee build_${{ matrix.variant }}.log
+          echo "========================================"
+          echo "📋 Configurações do Build:"
+          echo "========================================"
+          echo "VARIANT: ${VARIANT}"
+          echo "DT_OVERLAY_SUPPORT: ${DT_OVERLAY_SUPPORT}"
+          echo "BUILD_VENDOR_DLKM: ${BUILD_VENDOR_DLKM}"
+          echo "DTB_IMG_CREATE: ${DTB_IMG_CREATE}"
+          echo "SKIP_MRPROPER: ${SKIP_MRPROPER}"
+          echo "========================================"
 
-      - name: List Outputs
-        if: always()
-        run: |
-          echo "📂 Arquivos gerados:"
-          find out -type f \( -name "Image*" -o -name "*.dtb" -o -name "*.img" \) 2>/dev/null | head -20
-          find out -name "*.ko" 2>/dev/null | wc -l | xargs echo "Módulos:"
+          echo "🔎 Verificando ferramentas:"
+          which bison && bison --version | head -1
+          which flex && flex --version | head -1
+          which ufdt_apply_overlay && echo "✅ ufdt_apply_overlay disponível"
 
-      - name: Package
-        if: always()
+          bash build_kernel_GKI.sh
+          BUILDSCRIPT
+
+          chmod +x my_build.sh
+          echo "✅ Script de build criado"
+
+      - name: Build Kernel
         run: |
-          mkdir -p release
-          if [ -d "out" ]; then
-            tar -czf release/waipio-${{ matrix.variant }}.tar.gz out/
+          echo "🚀 Iniciando build do kernel Waipio (${{ matrix.variant }})..."
+          ./my_build.sh 2>&1 | tee build_${{ matrix.variant }}.log
+          BUILD_STATUS=${PIPESTATUS[0]}
+
+          if [ $BUILD_STATUS -ne 0 ]; then
+            echo "❌ Build falhou com código de erro: $BUILD_STATUS"
+            echo "📋 Últimas 100 linhas do log:"
+            tail -100 build_${{ matrix.variant }}.log
+            exit $BUILD_STATUS
           fi
 
-      - name: Upload
+          echo "✅ Build concluído com sucesso!"
+
+      - name: List Compiled Files
+        if: always()
+        run: |
+          echo "========================================"
+          echo "📂 Arquivos gerados:"
+          echo "========================================"
+
+          echo ""
+          echo "📁 Imagens do kernel:"
+          find out -type f \( -name "Image*" -o -name "*.img" \) 2>/dev/null | while read f; do
+            ls -lh "$f"
+          done
+
+          echo ""
+          echo "📁 Device Tree:"
+          find out -type f \( -name "*.dtb" -o -name "*.dtbo" \) 2>/dev/null | head -20
+
+          echo ""
+          echo "📁 Módulos (.ko):"
+          find out -name "*.ko" 2>/dev/null | wc -l | xargs echo "  Total:"
+
+      - name: Compress Output Folder
+        if: always()
+        run: |
+          if [ -d "out/" ] && [ "$(ls -A out/ 2>/dev/null)" ]; then
+            echo "📦 Compactando pasta out/..."
+            tar -czf out_${{ matrix.variant }}.tar.gz out/
+            ls -lh out_${{ matrix.variant }}.tar.gz
+            echo "✅ Arquivo out_${{ matrix.variant }}.tar.gz criado"
+          else
+            echo "⚠️ Pasta out/ vazia ou não existe"
+            echo "Nenhum arquivo gerado" > out_${{ matrix.variant }}.txt
+            tar -czf out_${{ matrix.variant }}.tar.gz out_${{ matrix.variant }}.txt
+          fi
+
+      - name: Upload Kernel Build Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: waipio-${{ matrix.variant }}-${{ github.run_number }}
-          path: |
-            release/*.tar.gz
-            build_*.log
+          name: waipio-${{ matrix.variant }}-artifacts-${{ github.run_number }}
+          path: out_${{ matrix.variant }}.tar.gz
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Upload Build Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: waipio-${{ matrix.variant }}-log-${{ github.run_number }}
+          path: build_${{ matrix.variant }}.log
+          retention-days: 3
           if-no-files-found: ignore
