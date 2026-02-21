@@ -6,16 +6,11 @@ on:
       variant:
         description: 'Variante de build'
         required: true
-        default: 'gki'
+        default: 'consolidate'
         type: choice
         options:
           - consolidate
           - gki
-      clean_build:
-        description: 'Fazer build limpo'
-        required: false
-        default: false
-        type: boolean
 
   push:
     branches:
@@ -33,7 +28,7 @@ jobs:
 
     strategy:
       matrix:
-        variant: [gki]
+        variant: [consolidate]
       fail-fast: false
 
     steps:
@@ -46,9 +41,11 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison flex build-essential libssl-dev \
+          sudo apt-get install -y \
+            bc bison flex build-essential libssl-dev \
             libncurses5-dev libelf-dev device-tree-compiler \
-            lz4 ccache python3 libfdt-dev git wget tar rsync
+            lz4 ccache python3 libfdt-dev git wget tar rsync \
+            coreutils sed
 
       - name: Setup Swap (16GB)
         run: |
@@ -81,18 +78,22 @@ jobs:
       - name: Setup Environment
         run: |
           CLANG_BIN="${GITHUB_WORKSPACE}/kernel_platform/prebuilts-master/clang/host/linux-x86/${CLANG_VERSION}/bin"
-          echo "PATH=$CLANG_BIN:$PATH" >> $GITHUB_ENV
+
+          echo "CLANG_BIN=$CLANG_BIN" >> $GITHUB_ENV
           echo "LLVM=1" >> $GITHUB_ENV
           echo "LLVM_IAS=1" >> $GITHUB_ENV
           echo "CC=clang" >> $GITHUB_ENV
           echo "LD=ld.lld" >> $GITHUB_ENV
-          echo "VARIANT=${{ github.event.inputs.variant || 'gki' }}" >> $GITHUB_ENV
+          echo "VARIANT=${{ github.event.inputs.variant || 'consolidate' }}" >> $GITHUB_ENV
 
       - name: Build Kernel (ACK Correct Way)
         run: |
           echo "🚀 Building Waipio ($VARIANT)"
 
           cd kernel_platform
+
+          # 🔥 PATH preservando sistema
+          export PATH=${CLANG_BIN}:/usr/bin:/bin:/usr/sbin:/sbin:$PATH
 
           export BUILD_CONFIG=msm-kernel/build.config.msm.waipio
           export OUT_DIR=${GITHUB_WORKSPACE}/out/msm-waipio-$VARIANT
