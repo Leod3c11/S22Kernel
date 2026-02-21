@@ -51,12 +51,26 @@ jobs:
             libncurses5-dev libelf-dev device-tree-compiler \
             lz4 ccache python3 libfdt-dev git wget tar
 
+      # ✅ SWAP CORRIGIDO AQUI
       - name: Setup Swap
         run: |
+          echo "🧠 Configurando swap..."
+
+          # Desativar swap existente (GitHub runner já tem swap ativo)
+          sudo swapoff -a || true
+
+          # Remover swapfile antigo se existir
+          if [ -f /swapfile ]; then
+            sudo rm -f /swapfile
+          fi
+
+          # Criar novo swap de 16GB
           sudo fallocate -l 16G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=16384
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
+
+          echo "✅ Swap ativo:"
           free -h
 
       - name: Cache Clang
