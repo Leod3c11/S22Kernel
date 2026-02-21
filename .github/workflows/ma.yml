@@ -1,106 +1,117 @@
-name: Build S22 Kernel (Non-GKI Custom)
+name: Build Custom S22 Kernel (Non-GKI)
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - 'kernel_platform/**'
-      - 'msm-kernel/**'
-      - 'build_custom.sh'
+    inputs:
+      kernel_branch:
+        description: 'Branch do kernel a ser compilado (ex: main)'
+        required: true
+        default: 'main'
 
 jobs:
-  build:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 180
+  build_kernel:
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          fetch-depth: 0
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.inputs.kernel_branch }}
 
-      - name: Install Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            bc bison build-essential flex libssl-dev \
-            libncurses5-dev libelf-dev binutils-dev \
-            clang lld llvm device-tree-compiler \
-            lz4 ccache libfdt-dev git
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential flex bison libssl-dev libelf-dev python3 python3-pip llvm lld clang
 
-      - name: Setup Swap
-        run: |
-          sudo swapoff -a 2>/dev/null || true
-          sudo rm -f /swapfile 2>/dev/null || true
-          sleep 1
-          sudo fallocate -l 20G /swapfile 2>/dev/null || sudo dd if=/dev/zero of=/swapfile bs=1M count=20480 status=none
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
-          free -h
+    - name: Copy custom build script
+      run: |
+        echo '#!/bin/bash'
+        echo ''
+        echo '# =============================================================================='
+        echo '# Script de Compilação Customizado (Não-GKI) para S22 (Waipio)'
+        echo '# Este script ignora o fluxo GKI padrão e foca na configuração da Samsung.'
+        echo '# =============================================================================='
+        echo ''
+        echo '# 1. Configurações de Ambiente'
+        echo 'export ROOT_DIR=$(pwd)'
+        echo 'export KERNEL_DIR=$ROOT_DIR/kernel_platform/msm-kernel'
+        echo 'export OUT_DIR=$ROOT_DIR/out'
+        echo 'export ARCH=arm64'
+        echo 'export SUBARCH=arm64'
+        echo 'export CROSS_COMPILE=aarch64-linux-android-'
+        echo 'export CROSS_COMPILE_ARM32=arm-linux-androideabi-'
+        echo ''
+        echo '# 2. Definir Alvos'
+        echo '# Para o S22 (Waipio), usamos o sec_defconfig da Samsung como base.'
+        echo '# Variantes comuns: waipio_sec_defconfig, waipio_sec_userdebug_defconfig'
+        echo 'DEFCONFIG_BASE="vendor/waipio_sec_defconfig"'
+        echo ''
+        echo '# 3. Preparar ferramentas de build (Clang/GCC)'
+        echo '# O repositório já possui pré-built em kernel_platform/prebuilts (ajuste se necessário)'
+        echo '# Se estiver usando o ambiente padrão do Android:'
+        echo '# export PATH=$ROOT_DIR/kernel_platform/prebuilts/clang/host/linux-x86/clang-r416183b/bin:$PATH'
+        echo ''
+        echo 'echo "--- Iniciando compilação Não-GKI ---"'
+        echo 'echo "Base Defconfig: $DEFCONFIG_BASE"'
+        echo ''
+        echo '# 4. Limpeza (Opcional)'
+        echo '# make -C $KERNEL_DIR O=$OUT_DIR clean'
+        echo ''
+        echo '# 5. Gerar .config'
+        echo 'echo "Gerando configuração..."'
+        echo 'make -C $KERNEL_DIR O=$OUT_DIR $DEFCONFIG_BASE'
+        echo ''
+        echo '# 6. Personalização (Aqui você pode adicionar seus fragmentos)'
+        echo '# Exemplo: desabilitar verificação de assinatura de módulos ou habilitar overclock'
+        echo '# scripts/config --file $OUT_DIR/.config --enable CONFIG_LOCALVERSION_AUTO'
+        echo '# scripts/config --file $OUT_DIR/.config --set-str CONFIG_LOCALVERSION "-Custom-NonGKI"'
+        echo ''
+        echo '# 7. Compilar'
+        echo 'CPU_CORES=$(nproc)'
+        echo 'echo "Compilando com $CPU_CORES núcleos..."'
+        echo ''
+        echo 'make -C $KERNEL_DIR O=$OUT_DIR -j$CPU_CORES \'
+        echo '    CC=clang \'
+        echo '    LD=ld.lld \'
+        echo '    AR=llvm-ar \'
+        echo '    NM=llvm-nm \'
+        echo '    OBJCOPY=llvm-objcopy \'
+        echo '    OBJDUMP=llvm-objdump \'
+        echo '    STRIP=llvm-strip \'
+        echo '    LLVM=1 \'
+        echo '    LLVM_IAS=1'
+        echo ''
+        echo '# 8. Finalização'
+        echo 'if [ -f $OUT_DIR/arch/arm64/boot/Image ]; then'
+        echo '    echo "--- Compilação concluída com sucesso! ---"'
+        echo '    echo "Kernel Image: $OUT_DIR/arch/arm64/boot/Image"'
+        echo '    echo "DTBO: $OUT_DIR/arch/arm64/boot/dts/vendor/qcom/*.dtbo"'
+        echo 'else'
+        echo '    echo "--- Erro na compilação! Verifique os logs acima. ---"'
+        echo '    exit 1'
+        echo 'fi'
+        > build_custom.sh
 
-      - name: Fix Defconfig Symlink
-        run: |
-          CONFIG_DIR="kernel_platform/msm-kernel/arch/arm64/configs/vendor"
-          if [ -f "$CONFIG_DIR/waipio_sec_defconfig" ]; then
-            cd "$CONFIG_DIR"
-            ln -sf waipio_sec_defconfig waipio_sec__defconfig 2>/dev/null || true
-            echo "✅ Symlink criado"
-            ls -la waipio_sec*defconfig
-          fi
+    - name: Make build script executable
+      run: chmod +x build_custom.sh
 
-      - name: Setup Clang Toolchain
-        run: |
-          mkdir -p kernel_platform/prebuilts-master/clang/host/linux-x86
-          cd kernel_platform/prebuilts-master/clang/host/linux-x86
-          
-          if [ ! -d "clang-r416183b" ]; then
-            echo "📥 Baixando Clang..."
-            wget -q --show-progress \
-              https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12L-gsi/clang-r416183b.tar.gz \
-              -O clang.tar.gz
-            mkdir -p clang-r416183b
-            tar -C clang-r416183b -xzf clang.tar.gz
-            rm clang.tar.gz
-          fi
-          
-          echo "✅ Clang disponível:"
-          ls clang-r416183b/bin/clang
+    - name: Run custom build script
+      run: ./build_custom.sh
 
-      - name: Run Custom Build Script
-        run: |
-          chmod +x build_custom.sh
-          ./build_custom.sh 2>&1 | tee build.log
+    - name: Upload Kernel Image as artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: kernel-image
+        path: out/arch/arm64/boot/Image
 
-      - name: List Output Files
-        if: always()
-        run: |
-          echo "📂 Arquivos gerados:"
-          find out/ -type f \( -name "Image*" -o -name "*.dtb" -o -name "*.dtbo" \) 2>/dev/null | while read f; do
-            ls -lh "$f"
-          done
+    - name: Upload DTBOs as artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: dtbos
+        path: out/arch/arm64/boot/dts/vendor/qcom/*.dtbo
 
-      - name: Compress Output
-        if: always()
-        run: |
-          if [ -d "out/" ] && [ "$(ls -A out/ 2>/dev/null)" ]; then
-            tar -czf out.tar.gz out/
-            ls -lh out.tar.gz
-          else
-            echo "Nenhum output" > out.txt
-            tar -czf out.tar.gz out.txt
-          fi
-
-      - name: Upload Artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: s22-kernel-non-gki-${{ github.run_number }}
-          path: |
-            out.tar.gz
-            build.log
-          retention-days: 7
-          if-no-files-found: warn
-
+    - name: Upload Modules as artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: kernel-modules
+        path: out/lib/modules/
