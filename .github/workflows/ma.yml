@@ -23,80 +23,10 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y build-essential flex bison libssl-dev libelf-dev python3 python3-pip llvm lld clang
 
-    - name: Copy custom build script
-      run: |
-        echo '#!/bin/bash'
-        echo ''
-        echo '# =============================================================================='
-        echo '# Script de Compilação Customizado (Não-GKI) para S22 (Waipio)'
-        echo '# Este script ignora o fluxo GKI padrão e foca na configuração da Samsung.'
-        echo '# =============================================================================='
-        echo ''
-        echo '# 1. Configurações de Ambiente'
-        echo 'export ROOT_DIR=$(pwd)'
-        echo 'export KERNEL_DIR=$ROOT_DIR/kernel_platform/msm-kernel'
-        echo 'export OUT_DIR=$ROOT_DIR/out'
-        echo 'export ARCH=arm64'
-        echo 'export SUBARCH=arm64'
-        echo 'export CROSS_COMPILE=aarch64-linux-android-'
-        echo 'export CROSS_COMPILE_ARM32=arm-linux-androideabi-'
-        echo ''
-        echo '# 2. Definir Alvos'
-        echo '# Para o S22 (Waipio), usamos o sec_defconfig da Samsung como base.'
-        echo '# Variantes comuns: waipio_sec_defconfig, waipio_sec_userdebug_defconfig'
-        echo 'DEFCONFIG_BASE="vendor/waipio_sec_defconfig"'
-        echo ''
-        echo '# 3. Preparar ferramentas de build (Clang/GCC)'
-        echo '# O repositório já possui pré-built em kernel_platform/prebuilts (ajuste se necessário)'
-        echo '# Se estiver usando o ambiente padrão do Android:'
-        echo '# export PATH=$ROOT_DIR/kernel_platform/prebuilts/clang/host/linux-x86/clang-r416183b/bin:$PATH'
-        echo ''
-        echo 'echo "--- Iniciando compilação Não-GKI ---"'
-        echo 'echo "Base Defconfig: $DEFCONFIG_BASE"'
-        echo ''
-        echo '# 4. Limpeza (Opcional)'
-        echo '# make -C $KERNEL_DIR O=$OUT_DIR clean'
-        echo ''
-        echo '# 5. Gerar .config'
-        echo 'echo "Gerando configuração..."'
-        echo 'make -C $KERNEL_DIR O=$OUT_DIR $DEFCONFIG_BASE'
-        echo ''
-        echo '# 6. Personalização (Aqui você pode adicionar seus fragmentos)'
-        echo '# Exemplo: desabilitar verificação de assinatura de módulos ou habilitar overclock'
-        echo '# scripts/config --file $OUT_DIR/.config --enable CONFIG_LOCALVERSION_AUTO'
-        echo '# scripts/config --file $OUT_DIR/.config --set-str CONFIG_LOCALVERSION "-Custom-NonGKI"'
-        echo ''
-        echo '# 7. Compilar'
-        echo 'CPU_CORES=$(nproc)'
-        echo 'echo "Compilando com $CPU_CORES núcleos..."'
-        echo ''
-        echo 'make -C $KERNEL_DIR O=$OUT_DIR -j$CPU_CORES \'
-        echo '    CC=clang \'
-        echo '    LD=ld.lld \'
-        echo '    AR=llvm-ar \'
-        echo '    NM=llvm-nm \'
-        echo '    OBJCOPY=llvm-objcopy \'
-        echo '    OBJDUMP=llvm-objdump \'
-        echo '    STRIP=llvm-strip \'
-        echo '    LLVM=1 \'
-        echo '    LLVM_IAS=1'
-        echo ''
-        echo '# 8. Finalização'
-        echo 'if [ -f $OUT_DIR/arch/arm64/boot/Image ]; then'
-        echo '    echo "--- Compilação concluída com sucesso! ---"'
-        echo '    echo "Kernel Image: $OUT_DIR/arch/arm64/boot/Image"'
-        echo '    echo "DTBO: $OUT_DIR/arch/arm64/boot/dts/vendor/qcom/*.dtbo"'
-        echo 'else'
-        echo '    echo "--- Erro na compilação! Verifique os logs acima. ---"'
-        echo '    exit 1'
-        echo 'fi'
-        > build_custom.sh
-
-    - name: Make build script executable
-      run: chmod +x build_custom.sh
-
     - name: Run custom build script
-      run: ./build_custom.sh
+      run: |
+        chmod +x build_custom.sh
+        ./build_custom.sh
 
     - name: Upload Kernel Image as artifact
       uses: actions/upload-artifact@v4
