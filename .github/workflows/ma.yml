@@ -56,8 +56,14 @@ jobs:
             lz4 ccache kmod e2fsprogs python3 \
             libfdt-dev git
 
+      # 🔥 SWAP CORRIGIDO AQUI
       - name: Setup Swap Space
         run: |
+          echo "🧠 Configurando swap..."
+          sudo swapoff -a || true
+          if [ -f /swapfile ]; then
+            sudo rm -f /swapfile
+          fi
           sudo fallocate -l 20G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=20480
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
@@ -108,11 +114,9 @@ jobs:
         run: |
           echo "🚀 Build Waipio (${{ matrix.variant }})"
 
-          # Toolchain
           export CLANG_PREBUILT_BIN="kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin"
           export PATH="$CLANG_PREBUILT_BIN:$PATH"
 
-          # Build flags
           export MAKEFLAGS="-j$(nproc --all)"
           export HERMETIC_TOOLCHAIN=0
           export LLVM=1
@@ -129,23 +133,19 @@ jobs:
           export HOSTCC="$CLANG_PREBUILT_BIN/clang"
           export HOSTCXX="$CLANG_PREBUILT_BIN/clang++"
 
-          # Tools
           export BISON=/usr/bin/bison
           export FLEX=/usr/bin/flex
           export M4=/usr/bin/m4
           export DTC=/usr/bin/dtc
 
-          # Variante (consolidate ou gki) - ESSENCIAL!
           export VARIANT="${{ matrix.variant }}"
 
-          # Mrproper
           if [ "${{ inputs.clean_build }}" == "true" ]; then
             export SKIP_MRPROPER=0
           else
             export SKIP_MRPROPER=1
           fi
 
-          # Build
           chmod +x build_kernel_GKI.sh
           ./build_kernel_GKI.sh 2>&1 | tee build_${{ matrix.variant }}.log
 
