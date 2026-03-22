@@ -78,12 +78,12 @@ jobs:
 
           git clone --depth=1 https://android.googlesource.com/platform/system/libufdt /tmp/libufdt
 
-          cd /tmp/libufdt/utils
+          cd /tmp/libufdt
           mkdir -p build && cd build
           cmake .. -DCMAKE_BUILD_TYPE=Release
           make -j$(nproc)
 
-          UFDT_BIN="$(pwd)/src/ufdt_apply_overlay"
+          UFDT_BIN="$(pwd)/utils/src/ufdt_apply_overlay"
 
           # Onde o build system espera
           mkdir -p /home/runner/work/S22Kernel/S22Kernel/kernel_platform/tools/libufdt/utils/src
