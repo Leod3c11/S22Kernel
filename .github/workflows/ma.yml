@@ -184,7 +184,11 @@ WRAPPER
           export BUILD_VENDOR_DLKM=1
           export DTB_IMG_CREATE=1
           export DTC_OVERLAY_TEST_EXT=
-          export SKIP_MRPROPER=${{ inputs.clean_build == 'true' && '0' || '1' }}
+          if [ "${{ inputs.clean_build }}" == "true" ]; then
+            export SKIP_MRPROPER=0
+          else
+            export SKIP_MRPROPER=1
+          fi
 
           echo "🚀 Iniciando build (VARIANT=${VARIANT})..."
           bash build_kernel_GKI.sh 2>&1 | tee build.log
