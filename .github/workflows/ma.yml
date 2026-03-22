@@ -126,6 +126,15 @@ jobs:
           [ ! -f "$CLANG_BIN/clang" ] && echo "Clang nao encontrado" && exit 1
           "$CLANG_BIN/clang" --version | head -1
 
+      - name: Install mkdtboimg
+        run: |
+          wget -q "https://android.googlesource.com/platform/tools/mkdtboimg/+/refs/heads/master/mkdtboimg.py?format=TEXT" \
+            -O /tmp/mkdtboimg.b64
+          base64 -d /tmp/mkdtboimg.b64 > /usr/local/bin/mkdtboimg.py
+          chmod +x /usr/local/bin/mkdtboimg.py
+          echo "mkdtboimg.py instalado"
+          mkdtboimg.py --help | head -3
+
       - name: Build Kernel
         run: |
           set -e
