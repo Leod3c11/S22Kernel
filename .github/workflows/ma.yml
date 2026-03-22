@@ -3,14 +3,6 @@ name: Build Waipio Kernel (S22)
 on:
   workflow_dispatch:
     inputs:
-      variant:
-        description: 'Variante de build'
-        required: true
-        default: 'consolidate'
-        type: choice
-        options:
-          - consolidate
-          - gki
       clean_build:
         description: 'Fazer build limpo (mrproper)'
         required: false
@@ -33,11 +25,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
 
-    strategy:
-      matrix:
-        variant: [consolidate, gki]
-      fail-fast: false
-
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -54,7 +41,7 @@ jobs:
             qemu-user-static rsync wget tar unzip \
             clang lld llvm device-tree-compiler \
             lz4 ccache kmod e2fsprogs python3 \
-            libfdt-dev git
+            libfdt-dev cmake git
 
           echo "🔎 Verificando ferramentas:"
           which bison && bison --version | head -1
@@ -63,7 +50,6 @@ jobs:
 
       - name: Setup Swap Space
         run: |
-          echo "🧠 Configurando swap..."
           sudo swapoff -a 2>/dev/null || true
           sudo rm -f /swapfile 2>/dev/null || true
           sleep 1
@@ -71,58 +57,51 @@ jobs:
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
-          echo "✅ Swap configurado:"
           free -h
 
       - name: Fix Build Tools Paths
         run: |
-          echo "🔧 Corrigindo paths de ferramentas..."
-
           if [ -d "kernel_platform/build/build-tools/path/linux-x86" ]; then
             rm -rf kernel_platform/build/build-tools/path/linux-x86
-            echo "✅ Removido path problemático"
           fi
 
           mkdir -p kernel_platform/prebuilts/build-tools/linux-x86/bin
-
           for tool in bison flex m4; do
             if command -v $tool &> /dev/null; then
               ln -sf $(which $tool) kernel_platform/prebuilts/build-tools/linux-x86/bin/$tool 2>/dev/null || true
-              echo " ✅ $tool -> $(which $tool)"
             fi
           done
 
-          ls -la kernel_platform/prebuilts/build-tools/linux-x86/bin/ 2>/dev/null || echo "⚠️ Diretório não criado"
-
-      - name: Install ufdt_apply_overlay
+      - name: Build ufdt_apply_overlay from source
         run: |
-          echo "📦 Instalando ufdt_apply_overlay..."
+          echo "🔨 Compilando ufdt_apply_overlay da source..."
 
-          if command -v fdtoverlay > /dev/null 2>&1; then
-            echo "✅ fdtoverlay encontrado, criando symlink..."
-            sudo ln -sf $(which fdtoverlay) /usr/local/bin/ufdt_apply_overlay
-          else
-            echo "❌ fdtoverlay não encontrado"
-            exit 1
-          fi
+          cd kernel_platform/tools/libufdt
+          mkdir -p build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          make -j$(nproc)
 
-          which ufdt_apply_overlay
+          UFDT_BIN="$(pwd)/utils/src/ufdt_apply_overlay"
+
+          # Coloca onde o build system espera
+          cp "$UFDT_BIN" \
+            /home/runner/work/S22Kernel/S22Kernel/kernel_platform/tools/libufdt/utils/src/ufdt_apply_overlay
+
+          # Fallback global
+          sudo cp "$UFDT_BIN" /usr/local/bin/ufdt_apply_overlay
+
+          echo "✅ ufdt_apply_overlay compilado com sucesso"
 
       - name: Fix Double Underscore Defconfig
         run: |
-          echo "🔧 Corrigindo nome do defconfig..."
-
           CONFIG_DIR="kernel_platform/msm-kernel/arch/arm64/configs/vendor"
 
           if [ -f "$CONFIG_DIR/waipio_sec_defconfig" ]; then
             cd "$CONFIG_DIR"
-
             if [ ! -f "waipio_sec__defconfig" ]; then
               ln -s waipio_sec_defconfig waipio_sec__defconfig
               echo "✅ Symlink criado: waipio_sec__defconfig -> waipio_sec_defconfig"
             fi
-
-            echo "📋 Defconfigs disponíveis:"
             ls -la waipio_sec*defconfig
           else
             echo "⚠️ waipio_sec_defconfig não encontrado"
@@ -142,7 +121,6 @@ jobs:
           TOOLCHAIN_DIR="kernel_platform/prebuilts-master/clang/host/linux-x86"
           CLANG_TAR="clang-r416183b.tar.gz"
 
-          echo "📥 Baixando Clang de: $CLANG_URL"
           mkdir -p "$TOOLCHAIN_DIR"
           cd "$TOOLCHAIN_DIR"
 
@@ -151,7 +129,6 @@ jobs:
             exit 1
           }
 
-          echo "📦 Extraindo Clang..."
           mkdir -p clang-r416183b
           tar -C clang-r416183b -xzf "$CLANG_TAR" || {
             echo "❌ Falha na extração do Clang"
@@ -169,43 +146,24 @@ jobs:
             echo "❌ Clang não encontrado"
             exit 1
           fi
-          echo "✅ Clang verificado:"
           "$CLANG_BIN/clang" --version | head -1
 
-      - name: Prepare Build Script
+      - name: Build Kernel
         run: |
           set -e
 
-          if [ ! -d "kernel_platform" ]; then
-            echo "❌ Pasta kernel_platform não encontrada"
-            exit 1
-          fi
-
-          if [ ! -f "build_kernel_GKI.sh" ]; then
-            echo "❌ Script build_kernel_GKI.sh não encontrado"
-            exit 1
-          fi
-
-          cat > my_build.sh << 'BUILDSCRIPT'
-          #!/bin/bash
-          set -e
+          CLANG_PREBUILT_BIN="kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin"
 
           export MAKEFLAGS="-j$(nproc --all 2>/dev/null || echo 4)"
           export HERMETIC_TOOLCHAIN=0
-
-          export CLANG_PREBUILT_BIN="kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin"
-
           export LLVM=1
           export LLVM_IAS=1
           export LD=ld.lld
-
           export PATH="/usr/bin:/bin:/usr/sbin:/sbin:${CLANG_PREBUILT_BIN}:${PATH}"
-
           export BISON=/usr/bin/bison
           export FLEX=/usr/bin/flex
           export M4=/usr/bin/m4
           export DTC=/usr/bin/dtc
-
           export CC="${CLANG_PREBUILT_BIN}/clang"
           export CXX="${CLANG_PREBUILT_BIN}/clang++"
           export AR="${CLANG_PREBUILT_BIN}/llvm-ar"
@@ -216,9 +174,7 @@ jobs:
           export READELF="${CLANG_PREBUILT_BIN}/llvm-readelf"
           export HOSTCC="${CLANG_PREBUILT_BIN}/clang"
           export HOSTCXX="${CLANG_PREBUILT_BIN}/clang++"
-
-          export VARIANT="${{ matrix.variant }}"
-
+          export VARIANT=consolidate
           export DT_OVERLAY_SUPPORT=1
           export BUILD_VENDOR_DLKM=1
           export DTB_IMG_CREATE=1
@@ -229,43 +185,19 @@ jobs:
             export SKIP_MRPROPER=1
           fi
 
-          echo "========================================"
-          echo "📋 Configurações do Build:"
-          echo "========================================"
-          echo "VARIANT: ${VARIANT}"
-          echo "DT_OVERLAY_SUPPORT: ${DT_OVERLAY_SUPPORT}"
-          echo "BUILD_VENDOR_DLKM: ${BUILD_VENDOR_DLKM}"
-          echo "DTB_IMG_CREATE: ${DTB_IMG_CREATE}"
-          echo "SKIP_MRPROPER: ${SKIP_MRPROPER}"
-          echo "========================================"
-
-          echo "🔎 Verificando ferramentas:"
-          which bison && bison --version | head -1
-          which flex && flex --version | head -1
-          which ufdt_apply_overlay && echo "✅ ufdt_apply_overlay disponível"
-
-          bash build_kernel_GKI.sh
-          BUILDSCRIPT
-
-          chmod +x my_build.sh
-          echo "✅ Script de build criado"
-
-      - name: Build Kernel
-        run: |
-          echo "🚀 Iniciando build do kernel Waipio (${{ matrix.variant }})..."
-          ./my_build.sh 2>&1 | tee build_${{ matrix.variant }}.log
+          echo "🚀 Iniciando build..."
+          bash build_kernel_GKI.sh 2>&1 | tee build.log
           BUILD_STATUS=${PIPESTATUS[0]}
 
           if [ $BUILD_STATUS -ne 0 ]; then
-            echo "❌ Build falhou com código de erro: $BUILD_STATUS"
-            echo "📋 Últimas 100 linhas do log:"
-            tail -100 build_${{ matrix.variant }}.log
+            echo "❌ Build falhou (exit $BUILD_STATUS)"
+            tail -100 build.log
             exit $BUILD_STATUS
           fi
 
           echo "✅ Build concluído com sucesso!"
 
-      - name: Check vendor_boot output
+      - name: Check Output Images
         if: always()
         run: |
           echo "=== vendor_boot.img ==="
@@ -278,52 +210,32 @@ jobs:
           find out -name "dtbo.img" 2>/dev/null | xargs ls -lh 2>/dev/null || echo "NÃO GERADO"
 
           echo "=== dist/ ==="
-          find out -name "dist" -type d 2>/dev/null | while read d; do ls -lh "$d"; done || echo "Nenhum dist/ encontrado"
-
-          echo "=== Erros e falhas no log ==="
-          grep -iE "error:|failed|No such file|cannot find|undefined reference" build_${{ matrix.variant }}.log | grep -v "^--$" | tail -30 || echo "Nenhum erro encontrado no log"
-
-      - name: List Compiled Files
-        if: always()
-        run: |
-          echo "========================================"
-          echo "📂 Arquivos gerados:"
-          echo "========================================"
-
-          echo ""
-          echo "📁 Imagens do kernel:"
-          find out -type f \( -name "Image*" -o -name "*.img" \) 2>/dev/null | while read f; do
-            ls -lh "$f"
+          find out -name "dist" -type d 2>/dev/null | while read d; do
+            echo "--- $d ---"
+            ls -lh "$d" 2>/dev/null
           done
 
-          echo ""
-          echo "📁 Device Tree:"
-          find out -type f \( -name "*.dtb" -o -name "*.dtbo" \) 2>/dev/null | head -20
+          echo "=== Erros relevantes ==="
+          grep -iE "error:|failed|No such file|cannot find|mkbootimg|vendor_boot" \
+            build.log 2>/dev/null | grep -v "^--$" | tail -30
 
-          echo ""
-          echo "📁 Módulos (.ko):"
-          find out -name "*.ko" 2>/dev/null | wc -l | xargs echo " Total:"
-
-      - name: Compress Output Folder
+      - name: Compress Output
         if: always()
         run: |
           if [ -d "out/" ] && [ "$(ls -A out/ 2>/dev/null)" ]; then
-            echo "📦 Compactando pasta out/..."
-            tar -czf out_${{ matrix.variant }}.tar.gz out/
-            ls -lh out_${{ matrix.variant }}.tar.gz
-            echo "✅ Arquivo out_${{ matrix.variant }}.tar.gz criado"
+            tar -czf out.tar.gz out/
+            ls -lh out.tar.gz
           else
-            echo "⚠️ Pasta out/ vazia ou não existe"
-            echo "Nenhum arquivo gerado" > out_${{ matrix.variant }}.txt
-            tar -czf out_${{ matrix.variant }}.tar.gz out_${{ matrix.variant }}.txt
+            echo "Nenhum arquivo gerado" > empty.txt
+            tar -czf out.tar.gz empty.txt
           fi
 
-      - name: Upload Kernel Build Artifacts
+      - name: Upload Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: waipio-${{ matrix.variant }}-artifacts-${{ github.run_number }}
-          path: out_${{ matrix.variant }}.tar.gz
+          name: waipio-consolidate-${{ github.run_number }}
+          path: out.tar.gz
           retention-days: 7
           if-no-files-found: warn
 
@@ -331,7 +243,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: waipio-${{ matrix.variant }}-log-${{ github.run_number }}
-          path: build_${{ matrix.variant }}.log
+          name: build-log-${{ github.run_number }}
+          path: build.log
           retention-days: 14
           if-no-files-found: ignore
