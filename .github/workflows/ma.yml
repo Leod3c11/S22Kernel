@@ -88,7 +88,7 @@ jobs:
           for tool in bison flex m4; do
             if command -v $tool &> /dev/null; then
               ln -sf $(which $tool) kernel_platform/prebuilts/build-tools/linux-x86/bin/$tool 2>/dev/null || true
-              echo "  ✅ $tool -> $(which $tool)"
+              echo " ✅ $tool -> $(which $tool)"
             fi
           done
 
@@ -217,15 +217,12 @@ jobs:
           export HOSTCC="${CLANG_PREBUILT_BIN}/clang"
           export HOSTCXX="${CLANG_PREBUILT_BIN}/clang++"
 
-          # Variante do build (consolidate ou gki)
           export VARIANT="${{ matrix.variant }}"
 
-          # Configurações para gerar todos os arquivos
           export DT_OVERLAY_SUPPORT=1
           export BUILD_VENDOR_DLKM=1
           export DTB_IMG_CREATE=1
 
-          # Mrproper
           if [ "${{ inputs.clean_build }}" == "true" ]; then
             export SKIP_MRPROPER=0
           else
@@ -268,6 +265,24 @@ jobs:
 
           echo "✅ Build concluído com sucesso!"
 
+      - name: Check vendor_boot output
+        if: always()
+        run: |
+          echo "=== vendor_boot.img ==="
+          find out -name "vendor_boot.img" 2>/dev/null | xargs ls -lh 2>/dev/null || echo "NÃO GERADO"
+
+          echo "=== boot.img ==="
+          find out -name "boot.img" 2>/dev/null | xargs ls -lh 2>/dev/null || echo "NÃO GERADO"
+
+          echo "=== dtbo.img ==="
+          find out -name "dtbo.img" 2>/dev/null | xargs ls -lh 2>/dev/null || echo "NÃO GERADO"
+
+          echo "=== dist/ ==="
+          find out -name "dist" -type d 2>/dev/null | while read d; do ls -lh "$d"; done || echo "Nenhum dist/ encontrado"
+
+          echo "=== Erros e falhas no log ==="
+          grep -iE "error:|failed|No such file|cannot find|undefined reference" build_${{ matrix.variant }}.log | grep -v "^--$" | tail -30 || echo "Nenhum erro encontrado no log"
+
       - name: List Compiled Files
         if: always()
         run: |
@@ -287,7 +302,7 @@ jobs:
 
           echo ""
           echo "📁 Módulos (.ko):"
-          find out -name "*.ko" 2>/dev/null | wc -l | xargs echo "  Total:"
+          find out -name "*.ko" 2>/dev/null | wc -l | xargs echo " Total:"
 
       - name: Compress Output Folder
         if: always()
@@ -318,5 +333,5 @@ jobs:
         with:
           name: waipio-${{ matrix.variant }}-log-${{ github.run_number }}
           path: build_${{ matrix.variant }}.log
-          retention-days: 3
+          retention-days: 14
           if-no-files-found: ignore
