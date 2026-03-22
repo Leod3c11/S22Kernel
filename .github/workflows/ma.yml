@@ -8,7 +8,6 @@ on:
         required: false
         default: false
         type: boolean
-
   push:
     branches:
       - main
@@ -42,12 +41,9 @@ jobs:
             clang lld llvm device-tree-compiler \
             lz4 ccache kmod e2fsprogs python3 \
             libfdt-dev git gcc
-
-          echo "🔎 Ferramentas:"
           which bison && bison --version | head -1
           which flex && flex --version | head -1
           which clang && clang --version | head -1
-          which fdtoverlay && fdtoverlay --version 2>&1 | head -1 || true
 
       - name: Setup Swap Space
         run: |
@@ -73,11 +69,7 @@ jobs:
 
       - name: Install ufdt_apply_overlay
         run: |
-          echo "🔨 Compilando ufdt_apply_overlay da source AOSP..."
-
           git clone --depth=1 https://android.googlesource.com/platform/system/libufdt /tmp/libufdt
-
-          # Compilar direto com gcc — sem cmake, sem Android.bp
           gcc -o /tmp/ufdt_apply_overlay \
             /tmp/libufdt/utils/src/ufdt_apply_overlay.c \
             /tmp/libufdt/utils/src/ufdt.c \
@@ -86,26 +78,13 @@ jobs:
             /tmp/libufdt/utils/src/ufdt_overlay.c \
             -I/tmp/libufdt/include \
             -I/tmp/libufdt/utils/src \
-            -lfdt -lm 2>&1 || {
-              echo "⚠️ Compilação direta falhou, usando wrapper fdtoverlay..."
-              cat > /tmp/ufdt_apply_overlay << 'WRAPPER'
-#!/bin/bash
-# ufdt_apply_overlay base.dtb overlay.dtbo output.dtb
-exec fdtoverlay -i "$1" -o "$3" "$2"
-WRAPPER
-              chmod +x /tmp/ufdt_apply_overlay
-            }
-
-          # Instala nos dois lugares que o build system usa
+            -lfdt -lm 2>&1 \
+          || printf '#!/bin/bash\nexec fdtoverlay -i "$1" -o "$3" "$2"\n' > /tmp/ufdt_apply_overlay
+          chmod +x /tmp/ufdt_apply_overlay
           sudo cp /tmp/ufdt_apply_overlay /usr/local/bin/ufdt_apply_overlay
-          sudo chmod +x /usr/local/bin/ufdt_apply_overlay
-
-          DEST="kernel_platform/tools/libufdt/utils/src"
-          mkdir -p "$DEST"
-          cp /tmp/ufdt_apply_overlay "$DEST/ufdt_apply_overlay"
-          chmod +x "$DEST/ufdt_apply_overlay"
-
-          echo "✅ ufdt_apply_overlay instalado em /usr/local/bin e $DEST"
+          mkdir -p kernel_platform/tools/libufdt/utils/src
+          cp /tmp/ufdt_apply_overlay kernel_platform/tools/libufdt/utils/src/ufdt_apply_overlay
+          echo "ufdt_apply_overlay instalado"
           which ufdt_apply_overlay
 
       - name: Fix Double Underscore Defconfig
@@ -113,12 +92,12 @@ WRAPPER
           CONFIG_DIR="kernel_platform/msm-kernel/arch/arm64/configs/vendor"
           if [ -f "$CONFIG_DIR/waipio_sec_defconfig" ]; then
             cd "$CONFIG_DIR"
-            [ ! -f "waipio_sec__defconfig" ] && \
-              ln -s waipio_sec_defconfig waipio_sec__defconfig && \
-              echo "✅ Symlink criado: waipio_sec__defconfig -> waipio_sec_defconfig"
+            if [ ! -f "waipio_sec__defconfig" ]; then
+              ln -s waipio_sec_defconfig waipio_sec__defconfig
+            fi
             ls -la waipio_sec*defconfig
           else
-            echo "⚠️ waipio_sec_defconfig não encontrado"
+            echo "waipio_sec_defconfig nao encontrado"
             find kernel_platform -name "*waipio*defconfig" 2>/dev/null || true
           fi
 
@@ -135,30 +114,22 @@ WRAPPER
           TOOLCHAIN_DIR="kernel_platform/prebuilts-master/clang/host/linux-x86"
           mkdir -p "$TOOLCHAIN_DIR"
           cd "$TOOLCHAIN_DIR"
-          wget -q --show-progress --timeout=300 "$CLANG_URL" -O clang.tar.gz || {
-            echo "❌ Falha no download do Clang"
-            exit 1
-          }
+          wget -q --show-progress --timeout=300 "$CLANG_URL" -O clang.tar.gz || exit 1
           mkdir -p clang-r416183b
-          tar -C clang-r416183b -xzf clang.tar.gz || {
-            echo "❌ Falha na extração do Clang"
-            exit 1
-          }
+          tar -C clang-r416183b -xzf clang.tar.gz || exit 1
           rm -f clang.tar.gz
-          echo "✅ Clang instalado"
+          echo "Clang instalado"
 
       - name: Verify Clang
         run: |
           CLANG_BIN="kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin"
-          [ ! -f "$CLANG_BIN/clang" ] && echo "❌ Clang não encontrado" && exit 1
+          [ ! -f "$CLANG_BIN/clang" ] && echo "Clang nao encontrado" && exit 1
           "$CLANG_BIN/clang" --version | head -1
 
       - name: Build Kernel
         run: |
           set -e
-
           CLANG_PREBUILT_BIN="kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin"
-
           export MAKEFLAGS="-j$(nproc --all 2>/dev/null || echo 4)"
           export HERMETIC_TOOLCHAIN=0
           export LLVM=1
@@ -183,43 +154,36 @@ WRAPPER
           export DT_OVERLAY_SUPPORT=1
           export BUILD_VENDOR_DLKM=1
           export DTB_IMG_CREATE=1
-          export DTC_OVERLAY_TEST_EXT=
+          export DTC_OVERLAY_TEST_EXT=""
           if [ "${{ inputs.clean_build }}" == "true" ]; then
             export SKIP_MRPROPER=0
           else
             export SKIP_MRPROPER=1
           fi
-
-          echo "🚀 Iniciando build (VARIANT=${VARIANT})..."
+          echo "Iniciando build VARIANT=${VARIANT}..."
           bash build_kernel_GKI.sh 2>&1 | tee build.log
           BUILD_STATUS=${PIPESTATUS[0]}
-
           if [ $BUILD_STATUS -ne 0 ]; then
-            echo "❌ Build falhou (exit $BUILD_STATUS)"
+            echo "Build falhou (exit $BUILD_STATUS)"
             tail -100 build.log
             exit $BUILD_STATUS
           fi
-
-          echo "✅ Build concluído com sucesso!"
+          echo "Build concluido com sucesso!"
 
       - name: Check Output Images
         if: always()
         run: |
           echo "=== vendor_boot.img ==="
-          find out -name "vendor_boot.img" 2>/dev/null | xargs ls -lh 2>/dev/null || echo "NÃO GERADO"
-
+          find out -name "vendor_boot.img" 2>/dev/null | xargs ls -lh 2>/dev/null || echo "NAO GERADO"
           echo "=== boot.img ==="
-          find out -name "boot.img" 2>/dev/null | xargs ls -lh 2>/dev/null || echo "NÃO GERADO"
-
+          find out -name "boot.img" 2>/dev/null | xargs ls -lh 2>/dev/null || echo "NAO GERADO"
           echo "=== dtbo.img ==="
-          find out -name "dtbo.img" 2>/dev/null | xargs ls -lh 2>/dev/null || echo "NÃO GERADO"
-
+          find out -name "dtbo.img" 2>/dev/null | xargs ls -lh 2>/dev/null || echo "NAO GERADO"
           echo "=== dist/ ==="
           find out -name "dist" -type d 2>/dev/null | while read d; do
             echo "--- $d ---"
             ls -lh "$d" 2>/dev/null
           done
-
           echo "=== Erros relevantes ==="
           grep -iE "error:|failed|No such file|cannot find|mkbootimg|vendor_boot" \
             build.log 2>/dev/null | grep -v "^--$" | tail -30
