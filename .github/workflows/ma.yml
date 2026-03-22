@@ -41,12 +41,13 @@ jobs:
             qemu-user-static rsync wget tar unzip \
             clang lld llvm device-tree-compiler \
             lz4 ccache kmod e2fsprogs python3 \
-            libfdt-dev cmake git
+            libfdt-dev git gcc
 
-          echo "🔎 Verificando ferramentas:"
+          echo "🔎 Ferramentas:"
           which bison && bison --version | head -1
           which flex && flex --version | head -1
           which clang && clang --version | head -1
+          which fdtoverlay && fdtoverlay --version 2>&1 | head -1 || true
 
       - name: Setup Swap Space
         run: |
@@ -64,47 +65,57 @@ jobs:
           if [ -d "kernel_platform/build/build-tools/path/linux-x86" ]; then
             rm -rf kernel_platform/build/build-tools/path/linux-x86
           fi
-
           mkdir -p kernel_platform/prebuilts/build-tools/linux-x86/bin
           for tool in bison flex m4; do
-            if command -v $tool &> /dev/null; then
+            command -v $tool &>/dev/null && \
               ln -sf $(which $tool) kernel_platform/prebuilts/build-tools/linux-x86/bin/$tool 2>/dev/null || true
-            fi
           done
 
-      - name: Build ufdt_apply_overlay from source
+      - name: Install ufdt_apply_overlay
         run: |
-          echo "🔨 Baixando e compilando ufdt_apply_overlay do AOSP..."
+          echo "🔨 Compilando ufdt_apply_overlay da source AOSP..."
 
           git clone --depth=1 https://android.googlesource.com/platform/system/libufdt /tmp/libufdt
 
-          cd /tmp/libufdt
-          mkdir -p build && cd build
-          cmake .. -DCMAKE_BUILD_TYPE=Release
-          make -j$(nproc)
+          # Compilar direto com gcc — sem cmake, sem Android.bp
+          gcc -o /tmp/ufdt_apply_overlay \
+            /tmp/libufdt/utils/src/ufdt_apply_overlay.c \
+            /tmp/libufdt/utils/src/ufdt.c \
+            /tmp/libufdt/utils/src/ufdt_node.c \
+            /tmp/libufdt/utils/src/ufdt_node_pool.c \
+            /tmp/libufdt/utils/src/ufdt_overlay.c \
+            -I/tmp/libufdt/include \
+            -I/tmp/libufdt/utils/src \
+            -lfdt -lm 2>&1 || {
+              echo "⚠️ Compilação direta falhou, usando wrapper fdtoverlay..."
+              cat > /tmp/ufdt_apply_overlay << 'WRAPPER'
+#!/bin/bash
+# ufdt_apply_overlay base.dtb overlay.dtbo output.dtb
+exec fdtoverlay -i "$1" -o "$3" "$2"
+WRAPPER
+              chmod +x /tmp/ufdt_apply_overlay
+            }
 
-          UFDT_BIN="$(pwd)/utils/src/ufdt_apply_overlay"
+          # Instala nos dois lugares que o build system usa
+          sudo cp /tmp/ufdt_apply_overlay /usr/local/bin/ufdt_apply_overlay
+          sudo chmod +x /usr/local/bin/ufdt_apply_overlay
 
-          # Onde o build system espera
-          mkdir -p /home/runner/work/S22Kernel/S22Kernel/kernel_platform/tools/libufdt/utils/src
-          cp "$UFDT_BIN" \
-            /home/runner/work/S22Kernel/S22Kernel/kernel_platform/tools/libufdt/utils/src/ufdt_apply_overlay
+          DEST="kernel_platform/tools/libufdt/utils/src"
+          mkdir -p "$DEST"
+          cp /tmp/ufdt_apply_overlay "$DEST/ufdt_apply_overlay"
+          chmod +x "$DEST/ufdt_apply_overlay"
 
-          # Fallback global
-          sudo cp "$UFDT_BIN" /usr/local/bin/ufdt_apply_overlay
-
-          echo "✅ ufdt_apply_overlay compilado com sucesso"
+          echo "✅ ufdt_apply_overlay instalado em /usr/local/bin e $DEST"
+          which ufdt_apply_overlay
 
       - name: Fix Double Underscore Defconfig
         run: |
           CONFIG_DIR="kernel_platform/msm-kernel/arch/arm64/configs/vendor"
-
           if [ -f "$CONFIG_DIR/waipio_sec_defconfig" ]; then
             cd "$CONFIG_DIR"
-            if [ ! -f "waipio_sec__defconfig" ]; then
-              ln -s waipio_sec_defconfig waipio_sec__defconfig
+            [ ! -f "waipio_sec__defconfig" ] && \
+              ln -s waipio_sec_defconfig waipio_sec__defconfig && \
               echo "✅ Symlink criado: waipio_sec__defconfig -> waipio_sec_defconfig"
-            fi
             ls -la waipio_sec*defconfig
           else
             echo "⚠️ waipio_sec_defconfig não encontrado"
@@ -118,37 +129,28 @@ jobs:
           path: kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b
           key: clang-r416183b-v1-${{ runner.os }}
 
-      - name: Download and Configure Clang Toolchain
+      - name: Download Clang Toolchain
         if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
           TOOLCHAIN_DIR="kernel_platform/prebuilts-master/clang/host/linux-x86"
-          CLANG_TAR="clang-r416183b.tar.gz"
-
           mkdir -p "$TOOLCHAIN_DIR"
           cd "$TOOLCHAIN_DIR"
-
-          wget -q --show-progress --timeout=300 "$CLANG_URL" -O "$CLANG_TAR" || {
+          wget -q --show-progress --timeout=300 "$CLANG_URL" -O clang.tar.gz || {
             echo "❌ Falha no download do Clang"
             exit 1
           }
-
           mkdir -p clang-r416183b
-          tar -C clang-r416183b -xzf "$CLANG_TAR" || {
+          tar -C clang-r416183b -xzf clang.tar.gz || {
             echo "❌ Falha na extração do Clang"
             exit 1
           }
-          rm -f "$CLANG_TAR"
-
+          rm -f clang.tar.gz
           echo "✅ Clang instalado"
-          ls -la clang-r416183b/bin/clang
 
-      - name: Verify Clang Installation
+      - name: Verify Clang
         run: |
           CLANG_BIN="kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin"
-          if [ ! -f "$CLANG_BIN/clang" ]; then
-            echo "❌ Clang não encontrado"
-            exit 1
-          fi
+          [ ! -f "$CLANG_BIN/clang" ] && echo "❌ Clang não encontrado" && exit 1
           "$CLANG_BIN/clang" --version | head -1
 
       - name: Build Kernel
@@ -181,14 +183,10 @@ jobs:
           export DT_OVERLAY_SUPPORT=1
           export BUILD_VENDOR_DLKM=1
           export DTB_IMG_CREATE=1
+          export DTC_OVERLAY_TEST_EXT=
+          export SKIP_MRPROPER=${{ inputs.clean_build == 'true' && '0' || '1' }}
 
-          if [ "${{ inputs.clean_build }}" == "true" ]; then
-            export SKIP_MRPROPER=0
-          else
-            export SKIP_MRPROPER=1
-          fi
-
-          echo "🚀 Iniciando build..."
+          echo "🚀 Iniciando build (VARIANT=${VARIANT})..."
           bash build_kernel_GKI.sh 2>&1 | tee build.log
           BUILD_STATUS=${PIPESTATUS[0]}
 
