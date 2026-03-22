@@ -74,16 +74,19 @@ jobs:
 
       - name: Build ufdt_apply_overlay from source
         run: |
-          echo "🔨 Compilando ufdt_apply_overlay da source..."
+          echo "🔨 Baixando e compilando ufdt_apply_overlay do AOSP..."
 
-          cd kernel_platform/tools/libufdt
+          git clone --depth=1 https://android.googlesource.com/platform/system/libufdt /tmp/libufdt
+
+          cd /tmp/libufdt/utils
           mkdir -p build && cd build
           cmake .. -DCMAKE_BUILD_TYPE=Release
           make -j$(nproc)
 
-          UFDT_BIN="$(pwd)/utils/src/ufdt_apply_overlay"
+          UFDT_BIN="$(pwd)/src/ufdt_apply_overlay"
 
-          # Coloca onde o build system espera
+          # Onde o build system espera
+          mkdir -p /home/runner/work/S22Kernel/S22Kernel/kernel_platform/tools/libufdt/utils/src
           cp "$UFDT_BIN" \
             /home/runner/work/S22Kernel/S22Kernel/kernel_platform/tools/libufdt/utils/src/ufdt_apply_overlay
 
