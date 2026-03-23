@@ -89,7 +89,12 @@ jobs:
             > /tmp/mkbootfs
           sudo cp /tmp/mkbootfs /usr/local/bin/mkbootfs
           sudo chmod +x /usr/local/bin/mkbootfs
-          echo "mkbootfs: $(which mkbootfs)"
+          # build_image wrapper usando mke2fs
+          printf '#!/bin/bash\nSTAGING=$1\nOUTPUT=$3\nSIZE=$(du -sb "$STAGING" | awk '"'"'{print $1}'"'"')\nSIZE=$(( (SIZE * 3 + 1048575) / 1048576 ))M\nmke2fs -t ext4 -L vendor_dlkm -d "$STAGING" "$OUTPUT" $SIZE 2>/dev/null\n' \
+            > /tmp/build_image
+          sudo cp /tmp/build_image /usr/local/bin/build_image
+          sudo chmod +x /usr/local/bin/build_image
+          echo "build_image: $(which build_image)"
 
       - name: Fix Double Underscore Defconfig
         run: |
@@ -154,6 +159,8 @@ jobs:
           export READELF="${CLANG_PREBUILT_BIN}/llvm-readelf"
           export HOSTCC="${CLANG_PREBUILT_BIN}/clang"
           export HOSTCXX="${CLANG_PREBUILT_BIN}/clang++"
+          export BUILD_VENDOR_BOOT_IMG=1
+          export MKBOOTIMG_PATH="tools/mkbootimg/mkbootimg.py"
           export VARIANT=consolidate
           export DT_OVERLAY_SUPPORT=1
           export BUILD_VENDOR_DLKM=1
