@@ -59,9 +59,6 @@ jobs:
       - name: Fix Build Tools Paths
         run: |
           if [ -d "kernel_platform/build/build-tools/path/linux-x86" ]; then
-            sudo cp kernel_platform/build/build-tools/path/linux-x86/mkdtboimg.py \
-              /usr/local/bin/mkdtboimg.py 2>/dev/null || true
-            sudo chmod +x /usr/local/bin/mkdtboimg.py
             rm -rf kernel_platform/build/build-tools/path/linux-x86
           fi
           mkdir -p kernel_platform/prebuilts/build-tools/linux-x86/bin
@@ -69,7 +66,18 @@ jobs:
             command -v $tool &>/dev/null && \
               ln -sf $(which $tool) kernel_platform/prebuilts/build-tools/linux-x86/bin/$tool 2>/dev/null || true
           done
-          echo "mkdtboimg.py: $(which mkdtboimg.py 2>/dev/null || echo 'nao encontrado')"
+
+      - name: Install mkdtboimg
+        run: |
+          if pip3 install mkdtboimg 2>/dev/null && command -v mkdtboimg.py &>/dev/null; then
+            echo "mkdtboimg.py instalado via pip"
+          else
+            echo "pip falhou, clonando do AOSP..."
+            git clone --depth=1 https://android.googlesource.com/platform/tools/mkdtboimg /tmp/mkdtboimg
+            sudo cp /tmp/mkdtboimg/mkdtboimg.py /usr/local/bin/mkdtboimg.py
+            sudo chmod +x /usr/local/bin/mkdtboimg.py
+          fi
+          echo "mkdtboimg.py: $(which mkdtboimg.py)"
 
       - name: Install ufdt_apply_overlay
         run: |
