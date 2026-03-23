@@ -67,16 +67,16 @@ jobs:
               ln -sf $(which $tool) kernel_platform/prebuilts/build-tools/linux-x86/bin/$tool 2>/dev/null || true
           done
 
-      - name: Install mkdtboimg
+      - name: Install libufdt tools
         run: |
           git clone --depth=1 https://android.googlesource.com/platform/system/libufdt /tmp/libufdt
+
+          # mkdtboimg.py
           sudo cp /tmp/libufdt/utils/src/mkdtboimg.py /usr/local/bin/mkdtboimg.py
           sudo chmod +x /usr/local/bin/mkdtboimg.py
           echo "mkdtboimg.py: $(which mkdtboimg.py)"
 
-      - name: Install ufdt_apply_overlay
-        run: |
-          git clone --depth=1 https://android.googlesource.com/platform/system/libufdt /tmp/libufdt
+          # ufdt_apply_overlay
           gcc -o /tmp/ufdt_apply_overlay \
             /tmp/libufdt/utils/src/ufdt_apply_overlay.c \
             /tmp/libufdt/utils/src/ufdt.c \
@@ -91,8 +91,7 @@ jobs:
           sudo cp /tmp/ufdt_apply_overlay /usr/local/bin/ufdt_apply_overlay
           mkdir -p kernel_platform/tools/libufdt/utils/src
           cp /tmp/ufdt_apply_overlay kernel_platform/tools/libufdt/utils/src/ufdt_apply_overlay
-          echo "ufdt_apply_overlay instalado"
-          which ufdt_apply_overlay
+          echo "ufdt_apply_overlay: $(which ufdt_apply_overlay)"
 
       - name: Fix Double Underscore Defconfig
         run: |
