@@ -93,6 +93,16 @@ jobs:
           cp /tmp/ufdt_apply_overlay kernel_platform/tools/libufdt/utils/src/ufdt_apply_overlay
           echo "ufdt_apply_overlay: $(which ufdt_apply_overlay)"
 
+          # mkbootfs
+          git clone --depth=1 https://android.googlesource.com/platform/system/core /tmp/aosp-core
+          gcc -o /tmp/mkbootfs \
+            /tmp/aosp-core/cpio/mkbootfs.c \
+            -I/tmp/aosp-core/include \
+            -static 2>&1 || true
+          sudo cp /tmp/mkbootfs /usr/local/bin/mkbootfs
+          sudo chmod +x /usr/local/bin/mkbootfs
+          echo "mkbootfs: $(which mkbootfs)"
+
       - name: Fix Double Underscore Defconfig
         run: |
           CONFIG_DIR="kernel_platform/msm-kernel/arch/arm64/configs/vendor"
