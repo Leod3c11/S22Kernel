@@ -85,12 +85,9 @@ jobs:
           echo "ufdt_apply_overlay: $(which ufdt_apply_overlay)"
 
           # mkbootfs - wrapper usando cpio nativo
-          sudo bash -c 'cat > /usr/local/bin/mkbootfs << '"'"'EOF'"'"'
-#!/bin/bash
-# mkbootfs wrapper usando cpio
-dir="$1"
-(cd "$dir" && find . | cpio -H newc -o 2>/dev/null)
-EOF'
+          printf '#!/bin/bash\ndir="$1"\n(cd "$dir" && find . | cpio -H newc -o 2>/dev/null)\n' \
+            > /tmp/mkbootfs
+          sudo cp /tmp/mkbootfs /usr/local/bin/mkbootfs
           sudo chmod +x /usr/local/bin/mkbootfs
           echo "mkbootfs: $(which mkbootfs)"
 
