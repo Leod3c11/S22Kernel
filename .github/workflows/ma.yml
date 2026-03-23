@@ -239,4 +239,3 @@ jobs:
           path: build.log
           retention-days: 14
           if-no-files-found: ignore
-          if-no-files-found: ignore
