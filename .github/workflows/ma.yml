@@ -84,20 +84,15 @@ jobs:
           cp /tmp/ufdt_apply_overlay kernel_platform/tools/libufdt/utils/src/ufdt_apply_overlay
           echo "ufdt_apply_overlay: $(which ufdt_apply_overlay)"
 
-          # mkbootfs - compilar do system/core
-          git clone --depth=1 https://android.googlesource.com/platform/system/core /tmp/aosp-core
-          g++ -o /tmp/mkbootfs \
-            /tmp/aosp-core/mkbootfs/mkbootfs.cpp \
-            -I/tmp/aosp-core/include \
-            -I/tmp/aosp-core/libcutils/include \
-            2>&1 || true
-          if [ -f /tmp/mkbootfs ]; then
-            sudo cp /tmp/mkbootfs /usr/local/bin/mkbootfs
-            sudo chmod +x /usr/local/bin/mkbootfs
-            echo "mkbootfs: $(which mkbootfs)"
-          else
-            echo "mkbootfs nao compilado"
-          fi
+          # mkbootfs - wrapper usando cpio nativo
+          sudo bash -c 'cat > /usr/local/bin/mkbootfs << '"'"'EOF'"'"'
+#!/bin/bash
+# mkbootfs wrapper usando cpio
+dir="$1"
+(cd "$dir" && find . | cpio -H newc -o 2>/dev/null)
+EOF'
+          sudo chmod +x /usr/local/bin/mkbootfs
+          echo "mkbootfs: $(which mkbootfs)"
 
       - name: Fix Double Underscore Defconfig
         run: |
