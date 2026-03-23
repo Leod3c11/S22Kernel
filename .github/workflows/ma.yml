@@ -86,10 +86,8 @@ jobs:
 
           # mkbootfs - compilar do system/core
           git clone --depth=1 https://android.googlesource.com/platform/system/core /tmp/aosp-core
-          find /tmp/aosp-core -name "mkbootfs*" 2>/dev/null | head -5
-          gcc -o /tmp/mkbootfs \
-            /tmp/aosp-core/cpio/mkbootfs.c \
-            -I/tmp/aosp-core/libcutils/include \
+          g++ -o /tmp/mkbootfs \
+            /tmp/aosp-core/mkbootfs/mkbootfs.cpp \
             -I/tmp/aosp-core/include \
             2>&1 || true
           if [ -f /tmp/mkbootfs ]; then
@@ -97,8 +95,7 @@ jobs:
             sudo chmod +x /usr/local/bin/mkbootfs
             echo "mkbootfs: $(which mkbootfs)"
           else
-            echo "mkbootfs nao compilado - verificar caminhos"
-            find /tmp/aosp-core -name "*.c" | xargs grep -l "mkbootfs" 2>/dev/null | head -5
+            echo "mkbootfs nao compilado"
           fi
 
       - name: Fix Double Underscore Defconfig
