@@ -40,7 +40,7 @@ jobs:
             qemu-user-static rsync wget tar unzip \
             clang lld llvm device-tree-compiler \
             lz4 ccache kmod e2fsprogs python3 \
-            libfdt-dev git gcc
+            libfdt-dev git gcc android-tools-mkbootimg
           which bison && bison --version | head -1
           which flex && flex --version | head -1
           which clang && clang --version | head -1
