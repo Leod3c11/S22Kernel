@@ -89,6 +89,7 @@ jobs:
           g++ -o /tmp/mkbootfs \
             /tmp/aosp-core/mkbootfs/mkbootfs.cpp \
             -I/tmp/aosp-core/include \
+            -I/tmp/aosp-core/libcutils/include \
             2>&1 || true
           if [ -f /tmp/mkbootfs ]; then
             sudo cp /tmp/mkbootfs /usr/local/bin/mkbootfs
