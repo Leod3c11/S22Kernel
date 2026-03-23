@@ -69,8 +69,8 @@ jobs:
 
       - name: Install mkdtboimg
         run: |
-          git clone --depth=1 https://android.googlesource.com/platform/system/tools/mkbootimg /tmp/aosp-mkbootimg
-          sudo cp /tmp/aosp-mkbootimg/mkdtboimg.py /usr/local/bin/mkdtboimg.py
+          git clone --depth=1 https://android.googlesource.com/platform/system/libufdt /tmp/libufdt
+          sudo cp /tmp/libufdt/utils/src/mkdtboimg.py /usr/local/bin/mkdtboimg.py
           sudo chmod +x /usr/local/bin/mkdtboimg.py
           echo "mkdtboimg.py: $(which mkdtboimg.py)"
 
