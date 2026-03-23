@@ -67,46 +67,39 @@ jobs:
               ln -sf $(which $tool) kernel_platform/prebuilts/build-tools/linux-x86/bin/$tool 2>/dev/null || true
           done
 
-      - name: Debug libufdt structure
-        run: |
-          git clone --depth=1 https://android.googlesource.com/platform/system/libufdt /tmp/libufdt_debug
-          find /tmp/libufdt_debug -type f | sort
-
       - name: Install libufdt tools
         run: |
-          git clone --depth=1 https://android.googlesource.com/platform/system/libufdt /tmp/libufdt
+          git clone --depth=1 https://android.googlesource.com/platform/system/libufdt /tmp/libufdt_tools
 
           # mkdtboimg.py
-          sudo cp /tmp/libufdt/utils/src/mkdtboimg.py /usr/local/bin/mkdtboimg.py
+          sudo cp /tmp/libufdt_tools/utils/src/mkdtboimg.py /usr/local/bin/mkdtboimg.py
           sudo chmod +x /usr/local/bin/mkdtboimg.py
           echo "mkdtboimg.py: $(which mkdtboimg.py)"
 
-          # ufdt_apply_overlay
-          gcc -o /tmp/ufdt_apply_overlay \
-            /tmp/libufdt/utils/src/ufdt_apply_overlay.c \
-            /tmp/libufdt/utils/src/ufdt.c \
-            /tmp/libufdt/utils/src/ufdt_node.c \
-            /tmp/libufdt/utils/src/ufdt_node_pool.c \
-            /tmp/libufdt/utils/src/ufdt_overlay.c \
-            -I/tmp/libufdt/include \
-            -I/tmp/libufdt/utils/src \
-            -lfdt -lm 2>&1 \
-          || printf '#!/bin/bash\nexec fdtoverlay -i "$1" -o "$3" "$2"\n' > /tmp/ufdt_apply_overlay
+          # ufdt_apply_overlay - usar wrapper pois DTC_OVERLAY_TEST_EXT="" desabilita o uso
+          printf '#!/bin/bash\nexec fdtoverlay -i "$1" -o "$3" "$2"\n' > /tmp/ufdt_apply_overlay
           chmod +x /tmp/ufdt_apply_overlay
           sudo cp /tmp/ufdt_apply_overlay /usr/local/bin/ufdt_apply_overlay
           mkdir -p kernel_platform/tools/libufdt/utils/src
           cp /tmp/ufdt_apply_overlay kernel_platform/tools/libufdt/utils/src/ufdt_apply_overlay
           echo "ufdt_apply_overlay: $(which ufdt_apply_overlay)"
 
-          # mkbootfs
+          # mkbootfs - compilar do system/core
           git clone --depth=1 https://android.googlesource.com/platform/system/core /tmp/aosp-core
+          find /tmp/aosp-core -name "mkbootfs*" 2>/dev/null | head -5
           gcc -o /tmp/mkbootfs \
             /tmp/aosp-core/cpio/mkbootfs.c \
+            -I/tmp/aosp-core/libcutils/include \
             -I/tmp/aosp-core/include \
-            -static 2>&1 || true
-          sudo cp /tmp/mkbootfs /usr/local/bin/mkbootfs
-          sudo chmod +x /usr/local/bin/mkbootfs
-          echo "mkbootfs: $(which mkbootfs)"
+            2>&1 || true
+          if [ -f /tmp/mkbootfs ]; then
+            sudo cp /tmp/mkbootfs /usr/local/bin/mkbootfs
+            sudo chmod +x /usr/local/bin/mkbootfs
+            echo "mkbootfs: $(which mkbootfs)"
+          else
+            echo "mkbootfs nao compilado - verificar caminhos"
+            find /tmp/aosp-core -name "*.c" | xargs grep -l "mkbootfs" 2>/dev/null | head -5
+          fi
 
       - name: Fix Double Underscore Defconfig
         run: |
