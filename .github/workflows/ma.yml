@@ -59,6 +59,9 @@ jobs:
       - name: Fix Build Tools Paths
         run: |
           if [ -d "kernel_platform/build/build-tools/path/linux-x86" ]; then
+            sudo cp kernel_platform/build/build-tools/path/linux-x86/mkdtboimg.py \
+              /usr/local/bin/mkdtboimg.py 2>/dev/null || true
+            sudo chmod +x /usr/local/bin/mkdtboimg.py
             rm -rf kernel_platform/build/build-tools/path/linux-x86
           fi
           mkdir -p kernel_platform/prebuilts/build-tools/linux-x86/bin
@@ -66,6 +69,7 @@ jobs:
             command -v $tool &>/dev/null && \
               ln -sf $(which $tool) kernel_platform/prebuilts/build-tools/linux-x86/bin/$tool 2>/dev/null || true
           done
+          echo "mkdtboimg.py: $(which mkdtboimg.py 2>/dev/null || echo 'nao encontrado')"
 
       - name: Install ufdt_apply_overlay
         run: |
@@ -125,15 +129,6 @@ jobs:
           CLANG_BIN="kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin"
           [ ! -f "$CLANG_BIN/clang" ] && echo "Clang nao encontrado" && exit 1
           "$CLANG_BIN/clang" --version | head -1
-
-      - name: Install mkdtboimg
-        run: |
-          wget -q "https://android.googlesource.com/platform/tools/mkdtboimg/+/refs/heads/master/mkdtboimg.py?format=TEXT" \
-            -O /tmp/mkdtboimg.b64
-          base64 -d /tmp/mkdtboimg.b64 > /usr/local/bin/mkdtboimg.py
-          chmod +x /usr/local/bin/mkdtboimg.py
-          echo "mkdtboimg.py instalado"
-          mkdtboimg.py --help | head -3
 
       - name: Build Kernel
         run: |
