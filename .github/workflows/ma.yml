@@ -69,14 +69,9 @@ jobs:
 
       - name: Install mkdtboimg
         run: |
-          if pip3 install mkdtboimg 2>/dev/null && command -v mkdtboimg.py &>/dev/null; then
-            echo "mkdtboimg.py instalado via pip"
-          else
-            echo "pip falhou, clonando do AOSP..."
-            git clone --depth=1 https://android.googlesource.com/platform/tools/mkdtboimg /tmp/mkdtboimg
-            sudo cp /tmp/mkdtboimg/mkdtboimg.py /usr/local/bin/mkdtboimg.py
-            sudo chmod +x /usr/local/bin/mkdtboimg.py
-          fi
+          git clone --depth=1 https://android.googlesource.com/platform/system/tools/mkbootimg /tmp/aosp-mkbootimg
+          sudo cp /tmp/aosp-mkbootimg/mkdtboimg.py /usr/local/bin/mkdtboimg.py
+          sudo chmod +x /usr/local/bin/mkdtboimg.py
           echo "mkdtboimg.py: $(which mkdtboimg.py)"
 
       - name: Install ufdt_apply_overlay
