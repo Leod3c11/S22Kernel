@@ -58,8 +58,14 @@ jobs:
 
       - name: Fix Build Tools Paths
         run: |
-          if [ -d "kernel_platform/build/build-tools/path/linux-x86" ]; then
-            rm -rf kernel_platform/build/build-tools/path/linux-x86
+          TOOLS_PATH="kernel_platform/build/build-tools/path/linux-x86"
+          if [ -d "$TOOLS_PATH" ]; then
+            # Remover apenas symlinks quebrados de bison/flex/m4, preservar o resto
+            for tool in bison flex m4; do
+              rm -f "$TOOLS_PATH/$tool"
+              command -v $tool &>/dev/null && \
+                ln -sf $(which $tool) "$TOOLS_PATH/$tool" 2>/dev/null || true
+            done
           fi
           mkdir -p kernel_platform/prebuilts/build-tools/linux-x86/bin
           for tool in bison flex m4; do
@@ -82,6 +88,9 @@ jobs:
           sudo cp /tmp/ufdt_apply_overlay /usr/local/bin/ufdt_apply_overlay
           mkdir -p kernel_platform/tools/libufdt/utils/src
           cp /tmp/ufdt_apply_overlay kernel_platform/tools/libufdt/utils/src/ufdt_apply_overlay
+          # build.config.msm.common define DTC_OVERLAY_TEST_EXT=ufdt_apply_overlay e copy_dist_bins
+          # copia de build/build-tools/path/linux-x86/ - precisa estar lá
+          cp /tmp/ufdt_apply_overlay kernel_platform/build/build-tools/path/linux-x86/ufdt_apply_overlay 2>/dev/null || true
           echo "ufdt_apply_overlay: $(which ufdt_apply_overlay)"
 
           # mkbootfs - wrapper usando cpio nativo
@@ -159,13 +168,11 @@ jobs:
           export READELF="${CLANG_PREBUILT_BIN}/llvm-readelf"
           export HOSTCC="${CLANG_PREBUILT_BIN}/clang"
           export HOSTCXX="${CLANG_PREBUILT_BIN}/clang++"
-          export BUILD_VENDOR_BOOT_IMG=1
           export MKBOOTIMG_PATH="tools/mkbootimg/mkbootimg.py"
           export VARIANT=consolidate
           export DT_OVERLAY_SUPPORT=1
           export BUILD_VENDOR_DLKM=1
           export DTB_IMG_CREATE=1
-          export DTC_OVERLAY_TEST_EXT=""
           if [ "${{ inputs.clean_build }}" == "true" ]; then
             export SKIP_MRPROPER=0
           else
