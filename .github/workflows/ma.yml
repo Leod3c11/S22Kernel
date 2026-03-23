@@ -67,6 +67,11 @@ jobs:
               ln -sf $(which $tool) kernel_platform/prebuilts/build-tools/linux-x86/bin/$tool 2>/dev/null || true
           done
 
+      - name: Debug libufdt structure
+        run: |
+          git clone --depth=1 https://android.googlesource.com/platform/system/libufdt /tmp/libufdt_debug
+          find /tmp/libufdt_debug -type f | sort
+
       - name: Install libufdt tools
         run: |
           git clone --depth=1 https://android.googlesource.com/platform/system/libufdt /tmp/libufdt
