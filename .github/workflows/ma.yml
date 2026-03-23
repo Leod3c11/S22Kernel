@@ -105,6 +105,13 @@ jobs:
           sudo chmod +x /usr/local/bin/build_image
           echo "build_image: $(which build_image)"
 
+          # build_super_image wrapper - apenas pula, vendor_boot nao depende disso
+          printf '#!/bin/bash\necho "build_super_image: skipped"\nexit 0\n' \
+            > /tmp/build_super_image
+          sudo cp /tmp/build_super_image /usr/local/bin/build_super_image
+          sudo chmod +x /usr/local/bin/build_super_image
+          echo "build_super_image: $(which build_super_image)"
+
       - name: Fix Double Underscore Defconfig
         run: |
           CONFIG_DIR="kernel_platform/msm-kernel/arch/arm64/configs/vendor"
@@ -207,18 +214,16 @@ jobs:
             build.log 2>/dev/null | grep -v "^--$" | tail -30
 
       - name: Compress Output
-        if: always()
+        if: success()
         run: |
-          if [ -d "out/" ] && [ "$(ls -A out/ 2>/dev/null)" ]; then
-            tar -czf out.tar.gz out/
+          DIST_DIR="out/msm-waipio-waipio-gki/dist"
+          if [ -d "$DIST_DIR" ] && [ "$(ls -A $DIST_DIR 2>/dev/null)" ]; then
+            tar -czf out.tar.gz "$DIST_DIR"
             ls -lh out.tar.gz
-          else
-            echo "Nenhum arquivo gerado" > empty.txt
-            tar -czf out.tar.gz empty.txt
           fi
 
       - name: Upload Artifacts
-        if: always()
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: waipio-consolidate-${{ github.run_number }}
@@ -233,4 +238,5 @@ jobs:
           name: build-log-${{ github.run_number }}
           path: build.log
           retention-days: 14
+          if-no-files-found: ignore
           if-no-files-found: ignore
